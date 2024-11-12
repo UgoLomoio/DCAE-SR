@@ -1,11 +1,14 @@
-torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch
+torchvision
+torchaudio
 torchinfo
 neurokit2
 pytorch_lightning
-pywt
 scipy
 wfdb
 pycwt
 plotly
 imageio
 opencv-python
+matplotlib==3.7.0
