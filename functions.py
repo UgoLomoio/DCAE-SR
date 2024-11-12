@@ -35,21 +35,22 @@ from torch.nn import functional as F
 
 import matplotlib 
 import matplotlib.pyplot as plt
-plt.rcParams.update({'font.size': 22})
-matplotlib.rc('xtick', labelsize=20) 
-matplotlib.rc('ytick', labelsize=20) 
-font = {'family' : 'arial',
-        'weight' : 'bold',
-        'size'   : 22}
 
-matplotlib.rc('font', **font)
+#plt.rcParams.update({'font.size': 22})
+#matplotlib.rc('xtick', labelsize=20) 
+#matplotlib.rc('ytick', labelsize=20) 
+#font = {'family' : 'arial',
+#        'weight' : 'bold',
+#        'size'   : 22}
+
+#matplotlib.rc('font', **font)
 
 #gc.collect()
 #with torch.no_grad():
 #    torch.cuda.empty_cache()
     
 warnings.simplefilter(action='ignore', category=FutureWarning)    
-rcParams['font.weight'] = 'bold'
+#rcParams['font.weight'] = 'bold'
 os.environ["KMP_DUPLICATE_LIB_OK"]="TRUE"
 
 from sys import platform
@@ -82,7 +83,6 @@ def butter_highpass(highcut, fs=50, order=5):
     return b, a
 
 def notch_filter(cutoff, q, fs=50):
-
     nyq = 0.5*fs
     freq = cutoff/nyq
     b, a = iirnotch(freq, q)
@@ -253,111 +253,6 @@ def plot_gradients_blocks(block, data, img, module, block_num, row, col, epoch, 
         # currently waiting have been processed
         fig.canvas.flush_events()
 
-class PeakDetectionLoss(nn.Module):
-    def __init__(self, weight_peak=1.5, weight_non_peak=1.0, interval = 10, debug = False):
-        super(PeakDetectionLoss, self).__init__()
-        self.weight_peak = weight_peak  # Weight for peak region loss
-        self.weight_non_peak = weight_non_peak  # Weight for non-peak region loss
-        self.interval = interval #interval that can contain the PQRST curve [rpeak - 60, rpeak + 60] if interval = 60
-        self.debug = debug 
-        
-    def forward(self, x, x_recons):
-        
-        #print(x.shape, x_recons.shape)
-        if x.ndim == 3:
-            x = torch.squeeze(x, dim=0) 
-        if x_recons.ndim == 3:
-            x_recons = torch.squeeze(x_recons, dim=0) 
-        #print(x.shape, x_recons.shape)
-        
-        x_rpeaks = x.cpu().detach().numpy()[0].flatten()
-        rpeaks, info = nk.ecg_peaks(x_rpeaks, sampling_rate=50, method="pantompkins1985")          
-        rpeaks = torch.tensor(info["ECG_R_Peaks"]).float()
-        #print(rpeaks)
-        
-        # Loss for peak regions (encourage peak detection)
-        peaks_losses = []
-        non_peaks_losses = []
-        Ns = {"peaks": [], "non_peaks": []}
-        
-        for i, peak in enumerate(rpeaks):
-            
-            peak = peak.item()
-            if i == 0:
-                t0 = int(peak-self.interval)
-                if t0 > 0:
-                    #print("init", t0)
-                    #print(x.shape, x_recons.shape)
-                    first_loss = torch.pow(x[:, :t0] - x_recons[:, :t0], 2).flatten()
-                    Ns["non_peaks"].append(t0) 
-                    #print(first_loss)
-                    for elem in first_loss:
-                        non_peaks_losses.append(elem)
-                        
-                t1 = int(peak+self.interval)
-                if i+1 < len(rpeaks):
-                    t2 = int(rpeaks[i+1]-self.interval)
-                    if t2 > t1:
-                        #print("between", t1, t2)
-                        between_peak_loss = torch.pow(x[:, t1:t2] - x_recons[:, t1:t2], 2).flatten()
-                    elif t2 < t1:
-                        #print("between", t2, t1)
-                        between_peak_loss = torch.pow(x[:, t2:t1] - x_recons[:, t2:t1], 2).flatten()
-                    #print(between_peak_loss)
-                    Ns["non_peaks"].append(abs(t1-t2))
-                    for elem in between_peak_loss:
-                        non_peaks_losses.append(elem)
-                    
-            elif i < len(rpeaks)-1:
-                t1 = int(peak+self.interval)
-                t2 = int(rpeaks[i+1]-self.interval)
-                if t2 > t1:
-                    #print("between", t1, t2)
-                    between_peak_loss = torch.pow(x[:, t1:t2] - x_recons[:, t1:t2], 2).flatten()
-                elif t2 < t1: #if t2 == t1, dont do nothing, skip this part
-                    #print("between", t2, t1)
-                    between_peak_loss = torch.pow(x[:, t2:t1] - x_recons[:, t2:t1], 2).flatten()
-                #print(between_peak_loss)
-                Ns["non_peaks"].append(abs(t1-t2))
-                for elem in between_peak_loss:
-                    non_peaks_losses.append(elem)
-               
-            else:
-                t3 = int(peak+self.interval)
-                if t3 < 300:
-                    #print("last",t3)
-                    last_loss = torch.pow(x[:, t3:] - x_recons[:, t3:], 2).flatten()
-                    #print(last_loss)
-                    Ns["non_peaks"].append(300-t3) 
-                    for elem in last_loss:
-                        non_peaks_losses.append(elem)
-             
-            t4 = int(peak-self.interval)
-            t5 = int(peak+self.interval)
-            if t5 >= 300:
-                t5 = 300
-            #print("PEAK", t4, t5)
-            Ns["peaks"].append(self.interval*2)#abs(t5-t4)
-            loss = torch.pow(x[:, t4:t5] - x_recons[:, t4:t5], 2).flatten()
-            #print(loss)
-            for elem in loss:
-                peaks_losses.append(elem)
-        
-        #print(peaks_losses, non_peaks_losses)
-
-        peak_loss = 0.5*torch.mean(torch.tensor(peaks_losses))#torch.sum(torch.tensor(peaks_losses))/np.sum(Ns["peaks"])
-        non_peak_loss = 0.5*torch.mean(torch.tensor(non_peaks_losses))#torch.sum(torch.tensor(non_peaks_losses))/np.sum(Ns["non_peaks"])
-        total_loss = peak_loss*self.weight_peak + non_peak_loss*self.weight_non_peak
-        #print(peak_loss, non_peak_loss, total_loss)
-        if not self.debug:
-            total_loss.requires_grad_()
-            return total_loss
-        else:
-
-            return peaks_losses, non_peaks_losses, Ns
-            #return peak_loss, non_peak_loss, total_loss
-
-
 
 class EncoderBlock1d(nn.Module):
     def __init__(self, in_channels, out_channels, ks, stride, activation_name, do):
@@ -497,46 +392,6 @@ class DecoderBlockUpsample1d(nn.Module):
         if x.requires_grad:
             h = x.register_hook(self.activations_hook)
         return x
-
-class DeconvUpsampler2d(nn.Module):
-    def __init__(self, nchs, height, width, scale_factor, activation_name):
-        super(DeconvUpsampler2d, self).__init__()
-        
-        self.nchs = nchs
-        self.width = width
-        self.height = height
-        self.scale_factor = int(scale_factor)
-        self.activation_name = activation_name
-        
-        self.wanted_width = self.width * self.scale_factor
-        self.wanted_height = self.height * self.scale_factor
-        self.size = (self.wanted_width, self.wanted_height)
-        
-        self.n_layers = self.scale_factor
-        
-        self.kernel_sizes = [100 for i in range(self.n_layers)]
-        self.strides = [1 for i in range(self.n_layers)]
-        
-        self.blocks = []
-
-        for i in range(self.n_layers):
-            ks = self.kernel_sizes[i]
-            stride = self.strides[i]
-            print("AAAA up", ks, stride)
-            self.blocks.append(DecoderBlockUpsample2d(nchs, nchs, ks, stride, self.activation_name))
-        
-        self.upsampler = nn.Sequential(*self.blocks)
-        
-    def forward(self, x):
-        #print("Upsample")
-        #print(x.shape)
-        
-        for i, block in enumerate(self.blocks):
-            x = block(x)
-            
-        #self.plot_activations()
-           
-        return x
     
 class DeconvUpsampler1d(nn.Module):
     def __init__(self, nchs, height, width, scale_factor, activation_name):
@@ -561,7 +416,6 @@ class DeconvUpsampler1d(nn.Module):
         for i in range(self.n_layers):
             ks = self.kernel_sizes[i]
             stride = self.strides[i]
-            print("AAAA up", ks, stride)
             self.blocks.append(DecoderBlockUpsample1d(nchs, nchs, ks, stride, self.activation_name))
         
         self.upsampler = nn.Sequential(*self.blocks)
@@ -576,149 +430,6 @@ class DeconvUpsampler1d(nn.Module):
         #self.plot_activations()
            
         return x
-
-class EncoderBlock2d(nn.Module):
-    def __init__(self, in_channels, out_channels, ks, stride, activation_name, do):
-        super(EncoderBlock2d, self).__init__()
-        
-        self.conv2d_in = nn.Conv2d(in_channels, out_channels[0], kernel_size=ks[0], stride=stride[0], padding = 1, bias=True)
-        self.activation_in = activation_layer(activation_name)
-        #self.batch_norm_in = nn.BatchNorm2d(out_channels[0])
-        self.dropout_in = nn.Dropout(p=do)
-        self.conv2d_out = nn.Conv2d(out_channels[0], out_channels[1], kernel_size=ks[1], stride=stride[1], padding = 1, bias=True)
-        #self.batch_norm_out = nn.BatchNorm2d(out_channels[1])
-        self.activation_out = activation_layer(activation_name)
-        self.dropout_out = nn.Dropout(p=do)
-   
-        # placeholder for the gradients
-        self.gradients = None
-
-    # hook for the gradients of the activations
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    # method for the gradient extraction
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    # method for the activation exctraction
-    def get_activations(self, x):
-        return self.forward(x)
-
-    def forward(self, x):
-        x = self.conv2d_in(x)
-        x = self.activation_in(x)
-        #x = self.batch_norm_in(x)
-        x = self.dropout_in(x)
-        x = self.conv2d_out(x)
-        #x = self.batch_norm_out(x)
-        x = self.activation_out(x)
-        x = self.dropout_out(x)
-        if x.requires_grad:
-            h = x.register_hook(self.activations_hook)
-        return x
-
-
-class DecoderBlock2d(nn.Module):
-    def __init__(self, in_channels, out_channels, ks, stride, activation_name, do, last = False):
-        super(DecoderBlock2d, self).__init__()
-        
-        self.last = last
-        
-        if self.last: 
-            self.conv2d_in = nn.ConvTranspose2d(in_channels, out_channels[0], kernel_size=ks[0], stride=stride[0], padding = 1, bias=True)
-        else:
-            self.conv2d_in = nn.ConvTranspose2d(in_channels, out_channels[0], kernel_size=ks[0], stride=stride[0], padding = 1, bias=True)
-        self.activation_in = activation_layer(activation_name)
-        #self.batch_norm_in = nn.BatchNorm2d(out_channels[0])
-        self.dropout_in = nn.Dropout(p=do)
-        if self.last:  
-            self.conv2d_out = nn.ConvTranspose2d(out_channels[0], out_channels[1], kernel_size=ks[1], stride=stride[1], padding = 1, bias=True)
-        else:
-            self.conv2d_out = nn.ConvTranspose2d(out_channels[0], out_channels[1], kernel_size=ks[1], stride=stride[1], padding = 1, bias=True)
-        #self.batch_norm_out = nn.BatchNorm2d(out_channels[1])
-        self.activation_out = activation_layer(activation_name)
-        if not self.last:
-            self.dropout_out = nn.Dropout(p=do)
-            
-        # placeholder for the gradients
-        self.gradients = None
-    
-    # hook for the gradients of the activations
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    # method for the gradient extraction
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    # method for the activation exctraction
-    def get_activations(self, x):
-        return self.forward(x)
-
-    def forward(self, x):
-        x = self.conv2d_in(x)
-        x = self.activation_in(x)
-        #x = self.batch_norm_in(x)
-        x = self.dropout_in(x)
-        x = self.conv2d_out(x)
-        #x = self.batch_norm_out(x)
-        x = self.activation_out(x)
-        if not self.last:
-            x = self.dropout_out(x)
-        if x.requires_grad:
-            h = x.register_hook(self.activations_hook)
-        return x
-    
-
-class DecoderBlock2dSR(nn.Module):
-    def __init__(self, in_channels, out_channels, ks, stride, activation_name, do, last = False):
-        super(DecoderBlock2dSR, self).__init__()
-        
-        self.last = last
-
-        self.conv2d_in = nn.ConvTranspose2d(in_channels, out_channels[0], kernel_size=ks[0], stride=stride[0], padding = 1, bias=True)        
-        self.dropout_in = nn.Dropout(p=do)
-        self.activation_in = activation_layer(activation_name)
-        
-        self.conv2d_out = nn.ConvTranspose2d(out_channels[0], out_channels[1], kernel_size=ks[1], stride=stride[1], padding = 1, bias=True)
-        if not self.last:
-            self.dropout_out = nn.Dropout(p=do)
-        self.activation_out = activation_layer(activation_name)
-        #dimshuffle
-        #stacking
-        
-        # placeholder for the gradients
-        self.gradients = None
-    
-    # hook for the gradients of the activations
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    # method for the gradient extraction
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    # method for the activation exctraction
-    def get_activations(self, x):
-        return self.forward(x)
-
-    def forward(self, x):
-        x = self.conv2d_in(x)
-        x = self.activation_in(x)
-        #x = self.batch_norm_in(x)
-        x = self.dropout_in(x)
-
-        x = self.conv2d_out(x)
-        x = self.activation_out(x)
-        #x = self.batch_norm_out(x)
-        if not self.last:
-            x = self.dropout_out(x)
-
-        if x.requires_grad:
-            h = x.register_hook(self.activations_hook)
-        return x
-    
 
 class DecoderBlock1dSR(nn.Module):
     def __init__(self, in_channels, out_channels, ks, stride, activation_name, do, last = False, last_tanh = True):
@@ -783,129 +494,6 @@ class DecoderBlock1dSR(nn.Module):
             h = x.register_hook(self.activations_hook)
         return x
 
-
-class EncoderBlock3d(nn.Module):
-    def __init__(self, in_channels, out_channels, ks, stride, activation_name, do):
-        super(EncoderBlock3d, self).__init__()
-        
-        self.conv3d_in = nn.Conv3d(in_channels, out_channels[0], kernel_size=ks[0], stride=stride[0], bias=True)
-        self.activation_in = activation_layer(activation_name)
-        #self.batch_norm_in = nn.BatchNorm3d(out_channels[0])
-        self.dropout_in = nn.Dropout(p=do)
-        self.conv3d_out = nn.Conv2d(out_channels[0], out_channels[1], kernel_size=ks[1], stride=stride[1], bias=True)
-        #self.batch_norm_out = nn.BatchNorm3d(out_channels[1])
-        self.activation_out = activation_layer(activation_name)
-        self.dropout_out = nn.Dropout(p=do)
-   
-        # placeholder for the gradients
-        self.gradients = None
-
-    # hook for the gradients of the activations
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    # method for the gradient extraction
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    # method for the activation exctraction
-    def get_activations(self, x):
-        return self.forward(x)
-
-    def forward(self, x):
-        x = self.conv3d_in(x)
-        x = self.activation_in(x)
-        #x = self.batch_norm_in(x)
-        x = self.dropout_in(x)
-        x = self.conv3d_out(x)
-        #x = self.batch_norm_out(x)
-        x = self.activation_out(x)
-        x = self.dropout_out(x)
-        if x.requires_grad:
-            h = x.register_hook(self.activations_hook)
-        return x
-
-
-class DecoderBlock3d(nn.Module):
-    def __init__(self, in_channels, out_channels, ks, stride, activation_name, do, last = False):
-        super(DecoderBlock3d, self).__init__()
-        
-        self.last = last 
-        
-        self.conv3d_in = nn.ConvTranspose3d(in_channels, out_channels[0], kernel_size=ks[0], stride=stride[0], bias=True)
-        self.activation_in = activation_layer(activation_name)
-        #self.batch_norm_in = nn.BatchNorm3d(out_channels[0])
-        self.dropout_in = nn.Dropout(p=do)
-        self.conv3d_out = nn.ConvTranspose3d(out_channels[0], out_channels[1], kernel_size=ks[1], stride=stride[1], bias=True)
-        #self.batch_norm_out = nn.BatchNorm3d(out_channels[1])
-        self.activation_out = activation_layer(activation_name)
-        if not self.last:
-            self.dropout_out = nn.Dropout(p=do)
-            
-        # placeholder for the gradients
-        self.gradients = None
-    
-    # hook for the gradients of the activations
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    # method for the gradient extraction
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    # method for the activation exctraction
-    def get_activations(self, x):
-        return self.forward(x)
-
-    def forward(self, x):
-        x = self.conv3d_in(x)
-        x = self.activation_in(x)
-        #x = self.batch_norm_in(x)
-        x = self.dropout_in(x)
-        x = self.conv3d_out(x)
-        #x = self.batch_norm_out(x)
-        x = self.activation_out(x)
-        if not self.last:
-            x = self.dropout_out(x)
-        if x.requires_grad:
-            h = x.register_hook(self.activations_hook)
-        return x
-    
-class DecoderBlockUpsample3d(nn.Module):
-    def __init__(self, in_channels, out_channels, ks, stride, activation_name, do):
-        super(DecoderBlockUpsample3d, self).__init__()
-        
-        
-        self.conv3d_in = nn.ConvTranspose3d(in_channels, out_channels, kernel_size=ks, stride=stride, bias=True)
-        self.dropout_in = nn.Dropout(p=do)
-        self.activation_in = activation_layer(activation_name)
-        #dimshuffle
-        #stacking
-        
-        # placeholder for the gradients
-        self.gradients = None
-    
-    # hook for the gradients of the activations
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    # method for the gradient extraction
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    # method for the activation exctraction
-    def get_activations(self, x):
-        return self.forward(x)
-
-    def forward(self, x):
-        x = self.conv3d_in(x)
-        x = self.dropout_in(x)
-        x = self.activation_in(x)
-        if x.requires_grad:
-            h = x.register_hook(self.activations_hook)
-        return x
-
-
 class Encoder1d(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_sizes, strides, do, activation_name, to_predict, img):
         super(Encoder1d, self).__init__()
@@ -922,7 +510,7 @@ class Encoder1d(nn.Module):
         self.num_layers = len(self.out_channels)
         nrows = 2
         ncols = ceil(self.num_layers/nrows)
-        print(nrows, ncols)
+        #print(nrows, ncols)
         
         self.fig = plt.figure(figsize=(8,8)) # Notice the equal aspect ratio
 
@@ -935,7 +523,7 @@ class Encoder1d(nn.Module):
         for i, out_channel in enumerate(out_channels):
             ks = self.kernel_sizes[i]
             stride = self.strides[i]
-            print("AAAA", ks, stride)
+            #print("AAAA", ks, stride)
             self.blocks.append(EncoderBlock1d(in_channels, out_channel, ks, stride, self.activation_name, self.do))
             in_channels = out_channel[-1]
         
@@ -972,11 +560,11 @@ class Encoder1d(nn.Module):
            
             prev = temp.detach().clone()
             temp = block(temp)
-            print(block, prev.shape, temp.shape)
+            #print(block, prev.shape, temp.shape)
             # register the hook
             if temp.requires_grad:
                 h = temp.register_hook(self.activations_hook)
-            print(row, col)
+            #print(row, col)
             plot_gradients_blocks(block, prev, self.img, "Encoder", i, row, col, "None", self.fig, self.ax)
     
     def forward(self, x):
@@ -1053,7 +641,7 @@ class Decoder1d(nn.Module):
             
             prev = temp.detach().clone()
             temp = block(temp)
-            print(block, prev.shape, temp.shape)
+            #print(block, prev.shape, temp.shape)
             # register the hook
             if temp.requires_grad:
                 h = temp.register_hook(self.activations_hook)
@@ -1073,264 +661,6 @@ class Decoder1d(nn.Module):
         #self.plot_activations()
             
         return x
-
-class Encoder2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_sizes, strides, do, activation_name, to_predict, img):
-        super(Encoder2d, self).__init__()
-        
-        self.out_channels = out_channels
-        self.in_channels = in_channels
-        self.kernel_sizes = kernel_sizes
-        self.strides = strides
-        self.do = do
-        self.activation_name = activation_name
-        self.to_predict = to_predict
-        self.img = img 
-        
-        self.num_layers = len(self.out_channels)
-        nrows = 2
-        ncols = ceil(self.num_layers/nrows)
-        print(nrows, ncols)
-        
-        self.fig = plt.figure(figsize=(8,8)) # Notice the equal aspect ratio
-
-        self.ax = [self.fig.add_subplot(nrows, ncols, i+1) for i in range(nrows*ncols)]
-        self.ax = np.array(self.ax).reshape(nrows, ncols)
-
-        
-        self.blocks = []
-        
-        for i, out_channel in enumerate(out_channels):
-            ks = self.kernel_sizes[i]
-            stride = self.strides[i]
-            print("AAAA", ks, stride)
-            self.blocks.append(EncoderBlock2d(in_channels, out_channel, ks, stride, self.activation_name, self.do))
-            in_channels = out_channel[-1]
-        
-        # placeholder for the gradients
-        self.gradients = None
-        
-        self.encoder = nn.Sequential(*self.blocks)
-        #self.flatten = nn.Flatten(start_dim=1, end_dim=-1)
-    
-    # hook for the gradients of the activations
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    # method for the gradient extraction
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    # method for the activation exctraction
-    def get_activations(self, x, i):
-        return self.blocks[i](x)
-    
-    def plot_activations(self):
-         
-        temp = self.to_predict.detach().clone()
-
-        for i, block in enumerate(self.blocks):
-            if i < self.ncols:
-                row = 0
-                col = i    
-            else:
-                row = 1
-                col = i - self.ncols
-                temp = self.to_predict.detach().clone()
-           
-            prev = temp.detach().clone()
-            temp = block(temp)
-            print(block, prev.shape, temp.shape)
-            # register the hook
-            if temp.requires_grad:
-                h = temp.register_hook(self.activations_hook)
-            print(row, col)
-            plot_gradients_blocks(block, prev, self.img, "Encoder", i, row, col, "None", self.fig, self.ax)
-    
-    def forward(self, x):
-        #print("Encode")
-        #print(x.shape)
-        
-        for i, block in enumerate(self.blocks):
-            x = block(x)
-            
-        #self.plot_activations()
-           
-        return x
-
-
-class Decoder2d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_sizes, strides, do, activation_name, to_predict, img):
-        super(Decoder2d, self).__init__()
-        
-        print(in_channels, out_channels, kernel_sizes, strides)
-        
-        self.out_channels = out_channels
-        self.in_channels = in_channels
-        self.kernel_sizes = kernel_sizes
-        self.strides = strides
-        self.do = do
-        self.activation_name = activation_name
-        self.to_predict = to_predict
-        self.img = img 
-        
-        self.num_layers = len(self.out_channels)
-        nrows = 2
-        ncols = ceil(self.num_layers/nrows)
- 
-        self.fig = plt.figure(figsize=(8,8)) # Notice the equal aspect ratio
-        self.ax = [self.fig.add_subplot(nrows, ncols, i+1) for i in range(nrows*ncols)]
-        self.ax = np.array(self.ax).reshape(nrows, ncols)
-        
-        
-        self.blocks = []
-        
-        for i, out_channel in enumerate(out_channels):
-
-            ks = self.kernel_sizes[i]
-            stride = self.strides[i]
-            if i < len(out_channels)-1:
-                self.blocks.append(DecoderBlock2d(in_channels, out_channel, ks, stride, self.activation_name, self.do))
-            else:
-                self.blocks.append(DecoderBlock2d(in_channels, out_channel, ks, stride, self.activation_name, self.do, last = True))
-            in_channels = out_channel[-1]
-            
-        self.gradients = None
-        self.decoder = nn.Sequential(*self.blocks)
-        
-    # hook for the gradients of the activations
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    # method for the gradient extraction
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    # method for the activation exctraction
-    def get_activations(self, x, i):
-        return self.blocks[i](x)
-    
-    def plot_activations(self):
-         
-        temp = self.to_predict.detach().clone()
-
-        for i, block in enumerate(self.blocks):
-            if i < self.ncols:
-                row = 0
-                col = i    
-            else:
-                row = 1
-                col = i - self.ncols
-            
-            prev = temp.detach().clone()
-            temp = block(temp)
-            print(block, prev.shape, temp.shape)
-            # register the hook
-            if temp.requires_grad:
-                h = temp.register_hook(self.activations_hook)
-            plot_gradients_blocks(block, prev, self.img, "Decoder", i, row, col, "None", self.fig, self.ax)
-    
-    def forward(self, x):
-        #print("Decode")
-        #print(x.shape)
-
-        for i, block in enumerate(self.blocks):
-            x = block(x)
-      
-            # register the hook
-            #if x.requires_grad:
-            #    h = x.register_hook(self.activations_hook)
-                        
-        #self.plot_activations()            
-        return x
-
-
-class Decoder2dSR(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_sizes, strides, do, activation_name, to_predict, img):
-        super(Decoder2dSR, self).__init__()
-        
-        print(in_channels, out_channels, kernel_sizes, strides)
-        
-        self.out_channels = out_channels
-        self.in_channels = in_channels
-        self.kernel_sizes = kernel_sizes
-        self.strides = strides
-        self.do = do
-        self.activation_name = activation_name
-        self.to_predict = to_predict
-        self.img = img 
-        
-        self.num_layers = len(self.out_channels)
-        nrows = 2
-        ncols = ceil(self.num_layers/nrows)
- 
-        self.fig = plt.figure(figsize=(8,8)) # Notice the equal aspect ratio
-        self.ax = [self.fig.add_subplot(nrows, ncols, i+1) for i in range(nrows*ncols)]
-        self.ax = np.array(self.ax).reshape(nrows, ncols)
-        
-        
-        self.blocks = []  
-        
-        for i, out_channel in enumerate(out_channels):
-
-            ks = self.kernel_sizes[i]
-            stride = self.strides[i]
-            if (i < len(out_channels)-1):
-                self.blocks.append(DecoderBlock2dSR(in_channels, out_channel, ks, stride, self.activation_name, self.do))
-            else:
-                self.blocks.append(DecoderBlock2dSR(in_channels, out_channel, ks, stride, self.activation_name, self.do, last = True))
-            in_channels = out_channel[-1]
-            
-        self.gradients = None
-        self.decoder = nn.Sequential(*self.blocks)
-        
-    # hook for the gradients of the activations
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    # method for the gradient extraction
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    # method for the activation exctraction
-    def get_activations(self, x, i):
-        return self.blocks[i](x)
-    
-    def plot_activations(self):
-         
-        temp = self.to_predict.detach().clone()
-
-        for i, block in enumerate(self.blocks):
-            if i < self.ncols:
-                row = 0
-                col = i    
-            else:
-                row = 1
-                col = i - self.ncols
-            
-            prev = temp.detach().clone()
-            temp = block(temp)
-            print(block, prev.shape, temp.shape)
-            # register the hook
-            if temp.requires_grad:
-                h = temp.register_hook(self.activations_hook)
-            plot_gradients_blocks(block, prev, self.img, "Decoder", i, row, col, "None", self.fig, self.ax)
-    
-    def forward(self, x):
-        #print("Decode")
-        #print(x.shape)
-
-        for i, block in enumerate(self.blocks):
-            x = block(x)
-      
-            # register the hook
-            #if x.requires_grad:
-            #    h = x.register_hook(self.activations_hook)
-                        
-        #self.plot_activations()            
-        return x
-
-
 
 class Decoder1dSR(nn.Module):
     def __init__(self, in_channels, out_channels, kernel_sizes, strides, do, activation_name, to_predict, img, last_tanh = True):
@@ -1398,7 +728,7 @@ class Decoder1dSR(nn.Module):
             
             prev = temp.detach().clone()
             temp = block(temp)
-            print(block, prev.shape, temp.shape)
+            #print(block, prev.shape, temp.shape)
             # register the hook
             if temp.requires_grad:
                 h = temp.register_hook(self.activations_hook)
@@ -1416,177 +746,6 @@ class Decoder1dSR(nn.Module):
             #    h = x.register_hook(self.activations_hook)
                         
         #self.plot_activations()            
-        return x
-
-
-class Encoder3d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_sizes, strides, do, activation_name, to_predict, img):
-        super(Encoder3d, self).__init__()
-        
-        self.out_channels = out_channels
-        self.in_channels = in_channels
-        self.kernel_sizes = kernel_sizes
-        self.strides = strides
-        self.do = do
-        self.activation_name = activation_name
-        self.to_predict = to_predict
-        self.img = img 
-        
-        self.num_layers = len(self.out_channels)
-        nrows = 2
-        ncols = ceil(self.num_layers/nrows)
-        print(nrows, ncols)
-        
-        self.fig = plt.figure(figsize=(8,8)) # Notice the equal aspect ratio
-
-        self.ax = [self.fig.add_subplot(nrows, ncols, i+1) for i in range(nrows*ncols)]
-        self.ax = np.array(self.ax).reshape(nrows, ncols)
-
-        
-        self.blocks = []
-        
-        for i, out_channel in enumerate(out_channels):
-            ks = self.kernel_sizes[i]
-            stride = self.strides[i]
-            print("AAAA", ks, stride)
-            self.blocks.append(EncoderBlock3d(in_channels, out_channel, ks, stride, self.activation_name, self.do))
-            in_channels = out_channel[-1]
-        
-        # placeholder for the gradients
-        self.gradients = None
-        
-        self.encoder = nn.Sequential(*self.blocks)
-        #self.flatten = nn.Flatten(start_dim=1, end_dim=-1)
-    
-    # hook for the gradients of the activations
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    # method for the gradient extraction
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    # method for the activation exctraction
-    def get_activations(self, x, i):
-        return self.blocks[i](x)
-    
-    def plot_activations(self):
-         
-        temp = self.to_predict.detach().clone()
-
-        for i, block in enumerate(self.blocks):
-            if i < self.ncols:
-                row = 0
-                col = i    
-            else:
-                row = 1
-                col = i - self.ncols
-                temp = self.to_predict.detach().clone()
-           
-            prev = temp.detach().clone()
-            temp = block(temp)
-            print(block, prev.shape, temp.shape)
-            # register the hook
-            if temp.requires_grad:
-                h = temp.register_hook(self.activations_hook)
-            print(row, col)
-            plot_gradients_blocks(block, prev, self.img, "Encoder", i, row, col, "None", self.fig, self.ax)
-    
-    def forward(self, x):
-        #print("Encode")
-        #print(x.shape)
-        
-        for i, block in enumerate(self.blocks):
-            x = block(x)
-            
-        #self.plot_activations()
-           
-        return x
-
-class Decoder3d(nn.Module):
-    def __init__(self, in_channels, out_channels, kernel_sizes, strides, do, activation_name, to_predict, img):
-        super(Decoder3d, self).__init__()
-        
-        print(in_channels, out_channels, kernel_sizes, strides)
-        
-        self.out_channels = out_channels
-        self.in_channels = in_channels
-        self.kernel_sizes = kernel_sizes
-        self.strides = strides
-        self.do = do
-        self.activation_name = activation_name
-        self.to_predict = to_predict
-        self.img = img 
-        
-        self.num_layers = len(self.out_channels)
-        nrows = 2
-        ncols = ceil(self.num_layers/nrows)
- 
-        self.fig = plt.figure(figsize=(8,8)) # Notice the equal aspect ratio
-        self.ax = [self.fig.add_subplot(nrows, ncols, i+1) for i in range(nrows*ncols)]
-        self.ax = np.array(self.ax).reshape(nrows, ncols)
-        
-        
-        self.blocks = []
-        
-        for i, out_channel in enumerate(out_channels):
-
-            ks = self.kernel_sizes[i]
-            stride = self.strides[i]
-            if i < len(out_channels)-1:
-                self.blocks.append(DecoderBlock3d(in_channels, out_channel, ks, stride, self.activation_name, self.do))
-            else:
-                self.blocks.append(DecoderBlock3d(in_channels, out_channel, ks, stride, self.activation_name, self.do, last = True))
-            in_channels = out_channel[-1]
-            
-        self.gradients = None
-        self.decoder = nn.Sequential(*self.blocks)
-        
-    # hook for the gradients of the activations
-    def activations_hook(self, grad):
-        self.gradients = grad
-        
-    # method for the gradient extraction
-    def get_activations_gradient(self):
-        return self.gradients
-    
-    # method for the activation exctraction
-    def get_activations(self, x, i):
-        return self.blocks[i](x)
-    
-    def plot_activations(self):
-         
-        temp = self.to_predict.detach().clone()
-
-        for i, block in enumerate(self.blocks):
-            if i < self.ncols:
-                row = 0
-                col = i    
-            else:
-                row = 1
-                col = i - self.ncols
-            
-            prev = temp.detach().clone()
-            temp = block(temp)
-            print(block, prev.shape, temp.shape)
-            # register the hook
-            if temp.requires_grad:
-                h = temp.register_hook(self.activations_hook)
-            plot_gradients_blocks(block, prev, self.img, "Decoder", i, row, col, "None", self.fig, self.ax)
-    
-    def forward(self, x):
-        #print("Decode")
-        #print(x.shape)
-
-        for i, block in enumerate(self.blocks):
-            x = block(x)
-      
-            # register the hook
-            #if x.requires_grad:
-            #    h = x.register_hook(self.activations_hook)
-                        
-        #self.plot_activations()
-            
         return x
 
 def reverse_listoflist(list):
@@ -1726,10 +885,10 @@ class VAE1d_SR_multimodal(nn.Module):
             
             if "s" in self.mode:
                 #self.encoder = nn.Sequential(*modules).to(self.device)
-                print("Encoder ks: ", self.kernel_sizes)
+                #print("Encoder ks: ", self.kernel_sizes)
                 self.encoder = Encoder1d(self.in_channels, self.out_filters, self.kernel_sizes, self.strides, self.do, self.activation_name, self.to_predict, self.img).to(self.device)
                 #print(self.encoder)
-                print("Encoder ECG: ", summary(self.encoder, input_shape), "\n")
+                #print("Encoder ECG: ", summary(self.encoder, input_shape), "\n")
      
             self.encoder_out = self.latent_dim_nodense*self.batch_size* self.out_filters[-1][-1]
             #self.latent_dim = self.latent_dim_nodense*self.out_filters[-1][-1]
@@ -1737,7 +896,7 @@ class VAE1d_SR_multimodal(nn.Module):
             if self.type == "vae":
                 #self.latent_dim = self.latent_dim_nodense*self.out_filters[-1][-1]
                 self.latent_dim = latent_dim
-                print("Mu/Var", self.latent_dim_nodense*self.out_filters[-1][-1], self.latent_dim)
+                #print("Mu/Var", self.latent_dim_nodense*self.out_filters[-1][-1], self.latent_dim)
                 self.fc_mu = nn.Linear(self.latent_dim_nodense*self.out_filters[-1][-1], self.latent_dim).to(self.device)
                 self.fc_var = nn.Linear(self.latent_dim_nodense*self.out_filters[-1][-1], self.latent_dim)
             else:
@@ -1780,18 +939,18 @@ class VAE1d_SR_multimodal(nn.Module):
         with torch.no_grad():
             
             torch.cuda.empty_cache()
-            print("Width decoder: {}/{} = {}".format(self.latent_dim, self.out_filters[-1][-1],  self.latent_dim_nodense))
+            #print("Width decoder: {}/{} = {}".format(self.latent_dim, self.out_filters[-1][-1],  self.latent_dim_nodense))
             self.decoder_input_shape = (self.batch_size, self.out_filters[-1][-1], self.latent_dim_nodense)
-            print(self.decoder_input_shape)
+            #print(self.decoder_input_shape)
 
             if "s" in self.mode:
                 #self.decoder = nn.Sequential(*modules).to(self.device)
                 self.ks_dec = reverse_listoflist(self.kernel_sizes)
                 self.of_dec = reverse_listoflist(self.out_filters)
                 self.str_dec = reverse_listoflist(self.strides)
-                print("Decoder ks: ", self.ks_dec)
+                #print("Decoder ks: ", self.ks_dec)
                 self.decoder = Decoder1d(self.out_filters[-1][-1], self.of_dec, self.ks_dec, self.str_dec, self.do, self.activation_name, self.to_predict, self.img, last_tanh = self.last_tanh).to(self.device)
-                print("Decoder ECG no SuperResolution: ", summary(self.decoder, self.decoder_input_shape), "\n")
+                #print("Decoder ECG no SuperResolution: ", summary(self.decoder, self.decoder_input_shape), "\n")
                     
                 if self.sr_type == "upsample":
                     if self.scale_factor is not None:
@@ -1814,7 +973,7 @@ class VAE1d_SR_multimodal(nn.Module):
                         self.str_sr = self.str_dec 
                     self.upsample = Decoder1dSR(self.out_filters[-1][-1], self.of_sr, self.ks_sr, self.str_sr, self.do, self.activation_name, self.to_predict, self.img, last_tanh = self.last_tanh).to(self.device)
                     self.decoder_sr_input_shape =  self.decoder_input_shape
-                    print("Super Resolution ECG decoder:", summary(self.upsample, self.decoder_sr_input_shape), "\n")
+                    #print("Super Resolution ECG decoder:", summary(self.upsample, self.decoder_sr_input_shape), "\n")
                 
                 
                 if self.sr_type == "upsample":
@@ -1845,7 +1004,7 @@ class VAE1d_SR_multimodal(nn.Module):
                     else:
                         w = self.size 
                     summary_decoder_sr += "   Upsample-{}                  [-1, {}, {}] \n".format(i, ch, w)
-                    print("Decoder ECG with SuperResolution: \n", summary_decoder_sr, "\n")
+                    #print("Decoder ECG with SuperResolution: \n", summary_decoder_sr, "\n")
                 
             torch.cuda.empty_cache()
             
@@ -2102,810 +1261,7 @@ class VAE1d_SR_multimodal(nn.Module):
                     dict["Super Resolution Error"] = super_res_loss_s
                 
             return dict
-
-class VAE2d_SR_multimodal(nn.Module):
-
-    """
-    2 Dimensional VAE with SUPER RESOLUTION.
-    The network is made up by stacking ENASMacroLayer. The Macro search space contains these layers.
-    Each layer chooses an operation from predefined ones and SkipConnect then forms a network.
-
-    Parameters
-    ---
-    num_layers: int
-        The number of layers contained in the network.
-    in_channel: int
-        The number of input's channels.
-    num_classes: int
-        The number of classes for classification.
-    dropout_rate: float
-        Dropout layer's dropout rate before the final dense layer.
-    ...
-   """
-    def __init__(self, to_predict, to_predict_hr = None, img = None, num_layers=3, out_filters=None, in_channels=12, kernel_sizes = None, strides = None, do = 0.2, batch_size = 1, loss = "mse",
-                 scale_factor = None, size = [15, 250], activation_functions = None, width = 250, device = torch.device("cpu"), 
-                 mode = "s", activation_name = "tanh", loss_name="mse", type = "ae", height = 15, sr_type = "upsample", loss_type = "lr", ks_sr = None, str_sr = None, of_sr = None,
-                 ks_s_sr = None, str_s_sr = None, of_s_sr = None,  to_predict_s = None, to_predict_s_hr = None, out_filters_s = None, kernel_sizes_s = None, strides_s = None):
-        """
-        mode: 
-            s - reconstruction error only signal
-            w - reconstruction error only wavelets
-            sw/ws - reconstruction error signal and wavelets
-        """         
-        
-        super().__init__()
-
-        self.supported_modes = ["w", "sw", "ws"]#no only signal
-        self.supported_types = ["ae", "vae"]
-        self.supported_sr_types = ["upsample", "convt", "none"]
-        self.supported_loss_types = ["lr", "lr+hr", "hr"]
-        
-        self.batch_size = batch_size
-        self.num_layers = num_layers
-        self.out_filters = out_filters
-        self.in_channels = in_channels
-        self.do = do 
-        self.scale_factor = scale_factor
-        self.kernel_sizes = kernel_sizes
-        self.strides = strides 
-        self.width = width 
-        self.height = height
-        self.to_predict = to_predict 
-        self.to_predict_hr = to_predict_hr
-        self.img = img 
-        self.loss_name = loss_name
-        self.nchs = in_channels 
-    
-        if loss_type not in self.supported_loss_types:
-            loss_type = "lr"
-        self.loss_type = loss_type 
-        
-        if sr_type == "none":
-            sr_type = None
-        elif sr_type not in self.supported_sr_types:
-            sr_type = None
-        self.sr_type = sr_type
-
-        if mode not in self.supported_modes:
-            raise Exception("Mode {} for Multimodal Super Resolution 2d VAE not supported. Supported modalities: 's' for only signal reconstruction error, 'w' for only wavelets reconstruction error and 'sw' for wavelets and signal mean reconstruction error".format(mode))
-        else:
-            if mode == "ws":
-                mode = "sw"
-        self.mode = mode 
             
-        if "w" in self.mode:
-            if self.to_predict_hr is None:
-                raise Exception("to_predict_hr must be not None when ECG AE modality of reconstruction and super resolution is wavelet based.")
-        
-        if self.mode == "sw":
-            self.ks_sr_s = ks_s_sr
-            self.str_sr_s = str_s_sr
-            self.of_sr_s = of_s_sr
-            self.to_predict_s = to_predict_s
-            self.to_predict_s_hr = to_predict_s_hr
-            self.out_filters_s = out_filters_s
-            self.kernel_sizes_s = kernel_sizes_s
-            self.strides_s = strides_s
-            self.input_shape_s = [in_channels, width]
-            self.size_s = [width*10]
-            
-        if size is not None:
-            self.size = size 
-        else:
-            self.size = width * 10
-            if self.height is not None:
-                self.size = [125, width*10]
-                
-
-        self.device = device
-        self.decoder_input_shape = None
-        self.z_input_shape = self.in_channels
-
-        if self.out_filters is None:
-            self.out_filters = [int(in_channels/(i+1)) for i in range(self.num_layers)]
-            self.out_filters[-1] = 1
-        if self.kernel_sizes is None:
-            self.kernel_sizes = [[[1, 1], [1, 1]] for i in range(self.num_layers)]
-        if self.strides is None:
-            self.strides = [[[1, 1], [1, 1]] for i in range(self.num_layers)]
-        
-        ks_h = [elem[0] for items in self.kernel_sizes for elem in items]
-        ks_w = [elem[1] for items in self.kernel_sizes for elem in items]
-        str_h = [elem[0] for items in self.strides for elem in items]
-        str_w = [elem[1] for items in self.strides for elem in items]
-        sum_ksh = np.sum(ks_h)
-        sum_strh = np.sum(str_h)
-        sum_ksw = np.sum(ks_w)
-        sum_strw = np.sum(str_w)
-        sum_pad = len(ks_h)*2  
-        self.x_input_shape = self.height - sum_ksh + sum_strh + sum_pad
-        self.y_input_shape = self.width - sum_ksw + sum_strw + sum_pad
-        self.latent_dim_nodense = (self.x_input_shape * self.y_input_shape)#self.num_layers * 2
-        print("Latent dim Wavelets: {}".format(self.latent_dim_nodense))
-        
-        if "s" in self.mode:
-            toprod =  [item for items in self.kernel_sizes_s for item in items]#item*2
-            div = np.sum([elem for elem in toprod if elem >= 1]) 
-            self.y_input_shape_s = int(self.width - div) 
-            self.latent_dim_nodense_s = (1 * self.y_input_shape_s + len(self.kernel_sizes_s)*2)#self.num_layers * 2
-            print("Latent dim ECG: {}".format(self.latent_dim_nodense_s))
-            
-        self.type = type.lower()
-        if self.type not in self.supported_types:
-            self.type = "ae"
-        
-        self.loss = loss
-        self.activation_name = activation_name
-
-        input_linear = self.latent_dim_nodense
-        
-        with torch.no_grad():
-            
-            torch.cuda.empty_cache()
-            input_shape = (self.batch_size, self.in_channels, self.height, self.width) 
-            
-            if "s" in self.mode:
-                #self.encoder = nn.Sequential(*modules).to(self.device)
-                print("Encoder ks: ", self.kernel_sizes)
-                input_shape_s = (self.batch_size, self.in_channels, self.width)
-                self.encoder = Encoder1d(self.in_channels, self.out_filters_s, self.kernel_sizes_s, self.strides_s, self.do, self.activation_name, self.to_predict_s, self.img).to(self.device)
-                #print(self.encoder)
-                print("Encoder ECG: ", summary(self.encoder, input_shape_s), "\n")
-                self.encoder_s_out =  self.latent_dim_nodense_s * self.batch_size * self.out_filters[-1][-1]
-            if "w" in self.mode:
-                #self.encoder_wav = nn.Sequential(*modules).to(self.device)
-                self.encoder_wav = Encoder2d(self.in_channels, self.out_filters, self.kernel_sizes, self.strides, self.do, self.activation_name, self.to_predict, self.img).to(self.device)
-                print("Encoder Wavelets: ", summary(self.encoder_wav, input_shape), "\n")
-                self.encoder_out = self.latent_dim_nodense * self.batch_size * self.out_filters[-1][-1]
-            
-            if self.mode == "w":
-                if self.type == "vae":
-                    self.latent_dim = self.latent_dim_nodense*self.out_filters[-1][-1]
-                    print("Mu/Var", self.latent_dim, self.latent_dim)
-                    self.fc_mu = nn.Linear(self.latent_dim, self.latent_dim).to(self.device)
-                    self.fc_var = nn.Linear(self.latent_dim, self.latent_dim).to(self.device)
-                else:
-                    self.latent_dim = self.encoder_out
-            else:
-                if self.type == "vae":
-                    raise Exception("vae not implemented for multimodality sr")
-                else:
-                    self.latent_dim = self.encoder_out
-            torch.cuda.empty_cache()
-       
-        
-        with torch.no_grad():
-            
-            torch.cuda.empty_cache()
-            print("Width decoder: {}/{} = {}".format(self.latent_dim, self.out_filters[-1][-1],  self.x_input_shape, self.y_input_shape))
-            self.decoder_input_shape = (self.batch_size, self.out_filters[-1][-1], self.x_input_shape, self.y_input_shape)
-            print(self.decoder_input_shape)
-
-            #self.decoder = nn.Sequential(*modules).to(self.device)
-            self.ks_dec = reverse_listoflist(self.kernel_sizes)
-            self.of_dec = reverse_listoflist(self.out_filters)
-            self.str_dec = reverse_listoflist(self.strides)
-            
-            print("Decoder ks: ", self.ks_dec)
-            print("Decoder stride: ", self.str_dec)
-            if "s" in self.mode:
-                self.ks_dec_s = reverse_listoflist(self.kernel_sizes_s)
-                self.of_dec_s = reverse_listoflist(self.out_filters_s)
-                self.str_dec_s = reverse_listoflist(self.strides_s)
-                self.decoder_input_shape_s = (self.batch_size, self.out_filters_s[-1][-1], self.y_input_shape_s)
-                self.decoder = Decoder1d(self.out_filters_s[-1][-1], self.of_dec_s, self.ks_dec_s, self.str_dec_s, self.do, self.activation_name, self.to_predict_s, self.img).to(self.device)
-                print("Decoder ECG no SuperResolution: ", summary(self.decoder, self.decoder_input_shape_s), "\n")
-            if "w" in self.mode:
-                self.decoder_wav = Decoder2d(self.out_filters[-1][-1], self.of_dec, self.ks_dec, self.str_dec, self.do, self.activation_name, self.to_predict, self.img).to(self.device)
-                print("Decoder GMW WAVELETS: ", summary(self.decoder_wav, self.decoder_input_shape), "\n")
-                
-
-            if self.sr_type == "upsample":
-                if self.scale_factor is not None:
-                    self.upsample = nn.Upsample(scale_factor = self.scale_factor, mode="bilinear")
-                else:
-                    self.upsample = nn.Upsample(size = self.size, mode="bilinear")
-            elif self.sr_type == "convt":
-
-                
-                if of_sr is not None:
-                    self.of_sr = of_sr
-                else:
-                    self.of_sr = self.of_dec
-                if ks_sr is not None:
-                    self.ks_sr = ks_sr
-                else:
-                    self.ks_sr = self.ks_dec
-                if str_sr is not None:
-                    self.str_sr = str_sr
-                else:
-                    self.str_sr = self.str_dec 
-                        
-                if self.nchs == 1:
-                    if to_predict.dim() == 3:
-                        to_predict = torch.squeeze(to_predict, 0)
-                    if to_predict_hr.dim() == 3:
-                        to_predict_hr = torch.squeeze(to_predict_hr, 0)
-               
-                print("Decoder SR ks: ", self.ks_sr)
-                print("Decoder SR stride: ", self.str_sr)
-                
-                #do in the sr ? 
-                if "w" in self.mode:
-                    in_channels = self.out_filters[-1][-1]
-                    self.decoder_sr_wav = Decoder2dSR(in_channels, self.of_sr, self.ks_sr, self.str_sr, self.do, self.activation_name, self.to_predict, self.img).to(self.device)
-                    self.decoder_sr_input_shape = self.decoder_input_shape
-                    print("Super Resolution ECG WAV decoder:", summary(self.decoder_sr_wav, self.decoder_sr_input_shape), "\n")
-                if "s" in self.mode:
-                    in_channels = self.out_filters_s[-1][-1]
-                    #print(self.of_sr_s, self.ks_sr_s, self.str_sr_s)
-                    self.decoder_sr_s = Decoder1dSR(in_channels, self.of_sr_s, self.ks_sr_s, self.str_sr_s, self.do, self.activation_name, self.to_predict_s, self.img).to(self.device)
-                    self.decoder_sr_input_shape_s = self.decoder_input_shape_s
-                    print("Super Resolution ECG WAV decoder:", summary(self.decoder_sr_s, self.decoder_sr_input_shape_s), "\n")
-                
-         
-            if self.sr_type == "upsample":
-          
-                summary_decoder_sr = ''' \n ---------------------------------------------------- \n 
-                                            |      Layer (type)      | |     Output Shape      |        
-                                            ===================================================='''  
-                for layer in range(self.num_layers):
-                    if layer != 0:
-                        i = layer+1
-                    else:
-                        i = layer+1
-
-                    temp_w = [elem[1] for items in self.kernel_sizes for elem in items]
-                    temp_h = [elem[0] for items in self.kernel_sizes for elem in items]
-                    precw = self.width - np.sum(temp_w) #+ self.num_layers
-                    prech = self.height - np.sum(temp_h)
-                        
-                    w = int(precw+temp_w[layer]) 
-                    precw = w
-                    h =  int(prech+temp_h[layer]) 
-                    prech = h
-                    ch = self.of_dec[layer] 
-                    summary_decoder_sr += "   Conv2DTranspose-{}                    [-1, {}, {}, {}] \n".format(i, ch, h, w) 
-                    #if layer != self.num_layers-1:
-                    summary_decoder_sr += "    {}-{}                     [-1, {}, {}, {}] \n".format(activation_name.upper(), i, ch, h, w)
-                        
-                        
-                if self.scale_factor is not None:
-                    w = int(precw*self.scale_factor)
-                    h = int(prech*self.scale_factor)
-                else:
-                    w = self.size[1]
-                    h = self.size[0]
-                
-                summary_decoder_sr += "   Upsample-{}                  [-1, {}, {}, {}] \n".format(i, ch, h, w)
-                print("Super resolution part of the Decoders: \n", summary_decoder_sr, "\n")
-                
-        torch.cuda.empty_cache()
-            
-    def encode(self, x):
-        """
-        Encodes the input by passing through the encoder network
-        and returns the latent codes.
-        :param input: (Tensor) Input tensor to encoder [N x H x W x C]
-        :return: (Tensor) List of latent codes
-        """
-        torch.cuda.empty_cache()
-
-        # Split the result into mu and var components
-        # of the latent Gaussian distribution
-        z_ecg = None
-        z_wav = None
-            
-        if "w" in self.mode:
-            
-            if "s" in self.mode:
-                x_s, x_s_hr, x_w, x_w_hr, scales, scales_hr, label, sublabel = x  #first is the signal
-                z_ecg = self.encoder(x_s)
-                z_ecg = torch.flatten(z_ecg)
-                if z_ecg.ndim == 1:
-                    z_ecg = torch.unsqueeze(z_ecg, dim = 0)
-            else: 
-                x_w, x_w_hr, scales, scales_hr, label, sublabel = x
-        
-            z_wav = self.encoder_wav(x_w)
-            z_wav = torch.reshape(z_wav, (self.batch_size, self.latent_dim_nodense*self.out_filters[-1][-1]))
-        
-        if z_ecg is not None:
-            if z_wav is not None:
-                #print("z ecg: ", z_ecg.shape)
-                #print("z wav: ", z_wav.shape)
-                z = [z_ecg, z_wav] #testare
-                z = torch.cat(z, dim = 1)
-                #print("z final: ", z.shape)
-            else:
-                z = z_ecg
-        else:
-            if z_wav is not None:
-                z = z_wav
-        
-        if self.type == "vae":
-            mu = self.fc_mu(z)
-            log_var = self.fc_var(z)
-            return [mu, log_var]
-        else:
-            return z
-
-
-    def decode(self, z, scales):
-        """
-        NO SUPER RESOLUTION DECODER 
-        Maps the given latent codes
-        onto the image space.
-        :param z: (Tensor) [B x D]
-        :return: (Tensor) [B x H x W x C]
-        """
-        torch.cuda.empty_cache()
-        
-        recons_ecg = None
-        recons_wav = None
-        
-        
-        if "s" in self.mode:
-            total = self.batch_size * self.out_filters_s[-1][-1] * self.latent_dim_nodense_s
-            z_s = z[0, :total]
-            if z_s.ndim == 1:
-                z_s = torch.unsqueeze(z_s, dim=0)
-            z_s = torch.reshape(z_s, (self.batch_size, self.out_filters_s[-1][-1], self.latent_dim_nodense_s))
-            recons_ecg = self.decoder(z_s).to(self.device)           
-            
-            z_w = z[0, total:]
-            if z_w.ndim == 1:
-                z_w = torch.unsqueeze(z_w, dim=0)
-            z_w = torch.reshape(z_w, (self.batch_size, self.out_filters[-1][-1], self.x_input_shape, self.y_input_shape))
-        else:
-            z_w = z
-        
-        if "w" in self.mode:
-            if z_w.ndim == 1:
-                z_w = torch.unsqueeze(z_w, dim=0)
-            z_w = torch.reshape(z_w, (self.batch_size, self.out_filters[-1][-1], self.x_input_shape, self.y_input_shape))
-            recons_wav = self.decoder_wav(z_w).to(self.device)
-            if "w" == self.mode: #if sw, don't need to compute signal reconstruction from wavelets
-                if scales is not None:
-                    if scales.ndim == 2:
-                        scale = scales[0]
-                    else:
-                        scale = scales
-                    scale = torch.unsqueeze(scale, dim = 0)
-                    scale = scale.cpu().detach().numpy()
-                    
-                                            
-                    fs = 50
-                    dt = 1/fs
-                    dj = 0.5
-                    #scale = np.arange(1, 15, dj)
-                    recons_ecg = []
-                    batches =  recons_wav.clone()
-                        
-                    for batch in batches:
-                        signal = []
-                        for ch in range(self.nchs):
-                        
-                            if batches.ndim == 2:
-                                batches = torch.unsqueeze(batches, dim = 0)
-                            if batches.ndim == 3:
-                                batches = torch.unsqueeze(batches, dim = 0)
-
-                            wav_ch = batch[ch].cpu().detach().numpy()
-                            #print(wav_ch.shape, scale.shape)
-                            ecg_ch = pycwt.icwt(wav_ch, scale, dt, dj = dj, wavelet='morlet')
-                            signal.append(ecg_ch)
-                        signal = torch.from_numpy(np.array(signal)).float().to(self.device)
-                        recons_ecg.append(signal)
-                    recons_ecg = torch.stack(recons_ecg).float().to(self.device)
-                else:
-                    recons_ecg = None
-            
-            return recons_wav, recons_ecg
-        
-        if recons_ecg is not None:
-            if recons_wav is not None:
-                result = [recons_wav, recons_ecg]
-            else:
-                result = recons_ecg
-        else:
-            if recons_wav is not None:
-                result = recons_wav
-        
-        return result
-    
-    
-    def decode_sr(self, z, scales):
-        """
-        Maps the given latent codes
-        onto the image space.
-        :param z: (Tensor) [B x D]
-        :return: (Tensor) [B x C x H_HR x W_HR]
-        """
-        torch.cuda.empty_cache()
-        
-        result_ecg_sr = None
-        result_wv_sr = None 
-        if "s" in self.mode:
-            total = self.batch_size * self.out_filters_s[-1][-1] * self.latent_dim_nodense_s
-            z_s = z[0, :total]
-            if z_s.ndim == 1:
-                z_s = torch.unsqueeze(z_s, dim=0)
-            z_s = torch.reshape(z_s, (self.batch_size, self.out_filters_s[-1][-1], self.latent_dim_nodense_s))
-            recons_ecg = self.decoder(z_s).to(self.device)
-            if self.sr_type == "upsample":
-                result_ecg_sr = self.upsample(recons)
-            elif self.sr_type == "convt":
-                result_ecg_sr = self.decoder_sr_s(z_s).to(self.device)       
-                
-            z_w = z[0, total:]
-            if z_w.ndim == 1:
-                z_w = torch.unsqueeze(z_w, dim=0)
-            z_w = torch.reshape(z_w, (self.batch_size, self.out_filters[-1][-1], self.x_input_shape, self.y_input_shape))
-        else:
-            z_w = z
-            
-        if "w" in self.mode:
-            if z_w.ndim == 1:
-                z_w = torch.unsqueeze(z_w, dim=0)
-            z_w = torch.reshape(z_w, (self.batch_size, self.out_filters[-1][-1], self.x_input_shape, self.y_input_shape))
-            recons = self.decoder_wav(z_w)
-            if self.sr_type == "upsample":
-                result_wv_sr = self.upsample(recons)
-                if result_wv_sr.dim() == 2:
-                    result_wv_sr = torch.unsqueeze(result_wv_sr, dim = 0)
-                if result_wv_sr.dim() == 3:
-                    result_wv_sr = torch.unsqueeze(result_wv_sr, dim = 1)
-            elif self.sr_type == "convt":
-                result_wv_sr = self.decoder_sr_wav(z_w).to(self.device)
-                if result_wv_sr.dim() == 3:
-                    result_wv_sr = torch.unsqueeze(result_wv_sr, dim = 1)
-                    
-            #print("sr", result_wv_sr.shape)
-            if scales is not None:
-                if scales.ndim == 2:
-                    scale = scales[0]
-                else:
-                    scale = scales
-                scale = torch.unsqueeze(scale, dim = 0)
-                scale = scale.cpu().detach().numpy()
-                
-                
-                result_ecg_sr = []
-                fs = 500
-                dt = 1/fs
-                dj = 0.1
-                #scale = np.arange(1, 15, dj)
-                for batch in result_wv_sr:
-                    signal = []
-                    for ch in range(self.nchs):
-                        if batch.dim() == 2:
-                            batch = torch.unsqueeze(batch, dim = 0)
-                        elif batch.dim() == 4:
-                            batch = torch.squeeze(batch, dim = 1)
-                        wav_ch = batch[ch].cpu().detach().numpy()
-                        #print(wav_ch.shape, scale.shape)
-                        ecg_ch = pycwt.icwt(wav_ch, scale, dt, dj = dj, wavelet='morlet')
-                        signal.append(ecg_ch)
-                    signal = torch.from_numpy(np.array(signal)).float().to(self.device)
-                    result_ecg_sr.append(signal)                
-                result_ecg_sr = torch.stack(result_ecg_sr).float().to(self.device)
-                #print(result_ecg_sr.shape)
-            else:
-                result_ecg_sr = None
-                
-        #if "s" == self.mode:
-        #    return result_ecg_sr
-        if "w" in self.mode: #"w" and "sw"
-            return result_wv_sr, result_ecg_sr
- 
-
-    def reparameterize(self, mu, log_var):
-        """
-        Reparameterization trick to sample from N(mu, var) from
-        N(0,1).
-        :param mu: (Tensor) Mean of the latent Gaussian [B x D]
-        :param log_var: (Tensor) Standard deviation of the latent Gaussian [B x D]
-        :return: (Tensor) [B x D]
-        """
-        std = torch.exp(0.5 * log_var)
-        eps = torch.randn_like(std)
-        return eps * std + mu
-
-    
-    def kl_divergence(self, z, mu, log_var):
-        # --------------------------
-        # Monte carlo KL divergence
-        # --------------------------
-        # 1. define the first two probabilities (in this case Normal for both)
-        std = torch.exp(0.5 * log_var)
-        p = torch.distributions.Normal(torch.zeros_like(mu), torch.ones_like(std))
-        q = torch.distributions.Normal(mu, std)
-
-        # 2. get the probabilities from the equation
-        log_qzx = q.log_prob(z)
-        log_pz = p.log_prob(z)
-
-        # kl
-        kl = (log_qzx - log_pz)
-        kl = kl.sum(-1)
-        return kl
-    
-    def forward(self, x):
-        
-        original_x = x.copy()
-        
-        if "s" == self.mode:
-
-            if "hr" in self.loss_type:
-                signal, signal_hr, label, sublabel = x
-                x_return = [signal, signal_hr]
-            else:
-                signal, label, sublabel = x
-                x_return = signal
-
-        elif "w" == self.mode:
-            
-            wav, wav_hr, scales, scales_hr, label, sublabel = x
-            
-            #if wav.dim() > 3:
-            #    wav = torch.squeeze(wav, dim = 1)
-            #if wav_hr is not None:
-            #    if wav_hr.dim() > 3:
-            #        wav_hr = torch.squeeze(wav_hr, dim = 1)
-            if scales is not None:
-                if scales.ndim == 1:
-                    scales = torch.unsqueeze(scales, dim = 0)
-            if scales_hr is not None:
-                if scales_hr.ndim == 1:
-                    scales_hr = torch.unsqueeze(scales_hr, dim = 0)
-                #print("Input", wav.shape, wav_hr.shape)
-            #else:
-                #print("Input", wav.shape, None)
-                
-            if scales is not None:
-                dj = 0.5
-                fs = 50
-                dt = 1/fs
-                if scales.ndim == 2:
-                    scale = scales[0]
-                else:
-                    scale = scales
-                scale = torch.unsqueeze(scale, dim = 0)
-                scale = scale.cpu().detach().numpy()
-                #scale = np.arange(1, 15, dj)
-                signals = []
-                for batch in wav:
-                    signal = []
-                    for ch in range(self.nchs):
-                        wav_ch = batch[ch].cpu().detach().numpy()
-                        #print(wav_ch.shape, scale.shape)
-                        ecg = pycwt.icwt(wav_ch, scale, dt, dj = dj, wavelet='morlet')
-                        signal.append(ecg)
-                    #print(ch, ecg.shape)
-                    signal = torch.from_numpy(np.array(signal)).float()
-                    signals.append(signal)
-                signal_lr = torch.stack(signals)
-                signal_lr = signal_lr.requires_grad_()
-            else:
-                signal_lr = None
-                
-            
-            if scales_hr is not None:
-                dj = 0.1
-                fs = 500
-                dt = 1/fs
-                if scales_hr.ndim == 2:
-                    scale = scales_hr[0]
-                else:
-                    scale = scales_hr
-                scale = torch.unsqueeze(scale, dim = 0)
-                scale = scale.cpu().detach().numpy()
-                #scale = np.arange(1, 15, dj)
-                
-                signals = []
-                for batch in wav_hr:
-                    signal = []
-                    for ch in range(self.nchs):
-                        wav_ch = batch[ch].cpu().detach().numpy()
-                        #print(wav_ch.shape, scale.shape)
-                        ecg = pycwt.icwt(wav_ch, scale, dt, dj, wavelet='morlet')
-                        signal.append(ecg)
-                    #print(ch, ecg.shape)
-                    signal = torch.from_numpy(np.array(signal)).float()
-                    signals.append(signal)
-                signal_hr = torch.stack(signals)
-                signal_hr = signal_hr.requires_grad_()
-            else:
-                signal_hr = None
-            
-            x_return = [signal_lr, signal_hr, wav, wav_hr] 
-            #print(signal.shape)
-            
-        elif self.mode == "sw":
-
-            signal, signal_hr, wav, wav_hr, scales, scales_hr, label, sublabel = x
-            x_return = [signal, signal_hr, wav, wav_hr] 
-           
-        if self.type == "vae":
-            mu, log_var = self.encode(x) #for VAE
-            z = self.reparameterize(mu, log_var)
-        else:
-            z = self.encode(x)
-        
-        #print("Encoded ", z.shape)
-        
-        if z.ndim == 1:
-            z = torch.unsqueeze(z, dim=0)
-            #print("z after unsqueeze 0 dim", z.shape)
-        
-        #print("Input Decoders ", z.shape)
-        
-            
-        if "w" in self.mode:
-            #print("trying reshape", self.batch_size, self.out_filters[-1][-1], self.x_input_shape, self.y_input_shape)
-            recons_wav, recons_ecg = self.decode(z, scales)
-            recons_wav = torch.squeeze(recons_wav, dim = 0)
-            if recons_ecg is not None:
-                recons_ecg = torch.squeeze(recons_ecg, dim = 0)                
-            
-            #print("Recons WAV", recons_wav.shape)
-            #print("Recons ECG", recons_ecg.shape)
-            if self.sr_type is not None:
-                recons_wav_sr, recons_ecg_sr = self.decode_sr(z, scales_hr)
-                recons_wav_sr = torch.squeeze(recons_wav_sr, dim = 0)
-                if recons_ecg_sr is not None:
-                    recons_ecg_sr = torch.squeeze(recons_ecg_sr, dim = 0)
-            else: 
-                recons_wav_sr = None
-                recons_ecg_sr = None 
-            #print("Recons WAV SuperResolution ", recons_wav_sr.shape)    
-            if self.sr_type is not None:
-                if recons_ecg_sr  is not None:
-                    #print("Recons ECG SuperResolution ", recons_ecg_sr.shape)
-                    pass
-                    
-        if self.type == "vae":
-            return  [[recons_ecg, recons_wav], [recons_ecg_sr, recons_wav_sr], x_return, mu, log_var] #vae
-        else:
-            return  [[recons_ecg, recons_wav], [recons_ecg_sr, recons_wav_sr], x_return, z]#ae
-    
-    
-    
-    def loss_function(self,
-                      *args,
-                      **kwargs):
-        """
-        Computes the Multimodal VAE with super resolution loss function.
-        mse
-        :param args:
-        :param kwargs:
-        :return:
-        """
-        torch.cuda.empty_cache()
-        x = args[2]
-        kld_weight = kwargs["kld_weight"]
-            
-        if self.mode == "s":
-            
-            recons_s = args[0]
-            super_res_s = args[1]
-            recons_s = torch.unsqueeze(recons_s, dim=0)
-
-        else:
-            
-            x_s, x_s_hr, x_w, x_w_hr = x
-    
-            recons_s, recons_w = args[0]
-            recons_s = torch.unsqueeze(recons_s, dim=0)
-            recons_w = torch.unsqueeze(recons_w, dim=0)
-            super_res_s, super_res_w = args[1]
-
-        if self.type == "vae":
-            
-            mu = args[3]
-            log_var = args[4]
-
-            #kld_weight = kwargs['M_N'] # Account for the minibatch samples from the dataset
-            #print(kld_weight, "KLD weight")
-            #kld_loss = - 0.5 * torch.sum(1+ log_var - mu.pow(2) - log_var.exp())# torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim = 0), dim = 0)#torch.mean(-0.5 * torch.sum(1 + log_var - mu ** 2 - log_var.exp(), dim = 1), dim = 0)
-             
-            #expectation under z of the kl divergence between q(z|x) and
-            #a standard normal distribution of the same shape
-            z = self.reparameterize(mu, log_var)
-            kl = self.kl_divergence(z, mu, log_var)
-            
-        loss_f = get_loss_function(self.loss_name) 
-
-        if "s" in self.mode:
-            recons_loss_s = loss_f(recons_s, x_s)
-            if self.sr_type == "convt":
-                if "hr" in self.loss_type:
-
-                    super_res_loss_s = loss_f(super_res_s, x_s_hr)
-                    losses = [recons_loss_s, super_res_loss_s]
-                    idx = np.argmax([recons_loss_s.item(), super_res_loss_s.item()])
-                    temp_loss_s = losses[idx]
-                    #temp_loss_s = torch.mean(torch.tensor([recons_loss_s.item(), super_res_loss_s.item()]))
-                    #temp_loss_s = torch.from_numpy(temp_loss_s)
-                    #temp_loss_s.requires_grad_()
-                else:
-                    super_res_loss_s = None
-                    temp_loss_s = recons_loss_s
-            else:
-                super_res_loss_s = None
-                temp_loss_s = recons_loss_s
-                
-            if self.type == "vae":
-                #loss_s = torch.mean(recons_loss_s + kld_weight * kld_loss)#.item()
-                #elbo
-                loss_s = (kl - temp_loss_s)
-                loss_s = loss_s.mean()
-            else:
-                kl = None 
-                loss_s = temp_loss_s
-            
-        if "w" in self.mode: #input mode wavelets
-            recons_loss_w = loss_f(recons_w, x_w) #loss_f(recons_s.to(self.device), x_s.to(self.device)) It's better to learn the super resolution that optimize the signal reconstruction and super resulution, even when in input we have wavelets
-            if self.sr_type == "convt":
-                if "hr" in self.loss_type:
-                    super_res_loss_w = loss_f(super_res_w, x_w_hr) #loss_f(super_res_s.to(self.device), x_s_hr.to(self.device))
-                    if "lr" in self.loss_type:
-                        losses = [recons_loss_w, super_res_loss_w]
-                        idx = np.argmax([recons_loss_w.item(), super_res_loss_w.item()])
-                        temp_loss_w = losses[idx]
-                        #temp_loss_w = torch.mean(torch.tensor([recons_loss_w.item(), super_res_loss_w.item()]))
-                        #temp_loss_w.requires_grad_()
-                    else: 
-                        recons_loss_w = None
-                        temp_loss_w = super_res_loss_w
-                else:
-                    super_res_loss_w = None
-                    temp_loss_w = recons_loss_w
-            else:
-                super_res_loss_w = None
-                temp_loss_w = recons_loss_w
-            
-            if self.type == "vae":
-                #loss_w = torch.mean(recons_loss_w + kld_weight * kld_loss)#.item()
-                #elbo
-                loss_w = (kl - temp_loss_w)
-                loss_w = loss_w.mean()
-            else:
-                kl = None
-                loss_w = temp_loss_w
-            
-        if self.mode == "sw": #MAYBE ERROR
-            loss = torch.mean(torch.tensor([loss_s.item(), loss_w.item()]))
-            loss.requires_grad_()
-            return self.make_lossdict(loss, recons_loss_s=recons_loss_s, recons_loss_w=recons_loss_w, super_res_loss_s=super_res_loss_s, super_res_loss_w=super_res_loss_w, kl = kl)
-        elif self.mode == "s":
-            loss = loss_s
-            return self.make_lossdict(loss, recons_loss_s=recons_loss_s, kl=kl)
-        else:#self.mode == "w":
-            loss = loss_w
-            return self.make_lossdict(loss, recons_loss_w=recons_loss_w, super_res_loss_w=super_res_loss_w, kl=kl)
-
-    def make_lossdict(self, loss, recons_loss_s = None, recons_loss_w = None, super_res_loss_s = None, super_res_loss_w = None, kl = None):
-         
-        loss_dict = {}
-        loss_dict["loss"] = loss
-        if self.type == "vae":
-            loss_dict["KLD"] = kl.detach()
-        if "s" in self.mode:
-            loss_dict["Reconstruction Loss Signal"] = recons_loss_s
-            if self.sr_type == "convt":
-                if "hr" in self.loss_type:
-                    loss_dict["Super Resolution Error Signal"] = super_res_loss_s
-        if "w" in self.mode:
-            if "lr" in self.loss_type:
-                loss_dict["Reconstruction Loss Wavelets"] = recons_loss_w
-            if self.sr_type == "convt":
-                if "hr" in self.loss_type:
-                    loss_dict["Super Resolution Error Wavelets"] = super_res_loss_w
-
-        return loss_dict
-
 def listoftensors2tensor(listoftensors):
     
     n_tensors = len(listoftensors)
@@ -2928,7 +1284,7 @@ def listoftensors2tensor(listoftensors):
 
     for i, tensor in enumerate(listoftensors):
         #gc.collect()
-        print(i, "/", len(listoftensors), end = "\r")
+        #print(i, "/", len(listoftensors), end = "\r")
         #print(finaltensor.shape, tensor.shape)
         finaltensor[i] = tensor.to(device)
         del tensor
@@ -2938,7 +1294,7 @@ def plot_prediction(model, data, label, fig, axs, nchs, scale = None, channel = 
     
     data = data.to(device)
     
-    print(data.shape)
+    #print(data.shape)
     
     n = data.shape[-1]
     t = np.arange(0, n, 1)
@@ -3018,7 +1374,7 @@ def plot_prediction(model, data, label, fig, axs, nchs, scale = None, channel = 
             #if hr:
                 #sig_or_hr = torch.squeeze(sig_or_hr, dim = 0)
                 #sig_or_hr = sig_or_hr.to(device)
-            print(sig_or.shape)
+            #print(sig_or.shape)
             #sig_recons = torch.unsqueeze(sig_recons, dim = 0)
 
     sig_or = sig_or.to(device)
@@ -3028,7 +1384,7 @@ def plot_prediction(model, data, label, fig, axs, nchs, scale = None, channel = 
         
     if sig_or.ndim == 3:
         sig_or = torch.squeeze(sig_or, dim = 0)
-    print(sig_or.shape, sig_recons.shape)
+    #print(sig_or.shape, sig_recons.shape)
     
     loss_f = get_loss_function(loss_name)
     recons_loss = loss_f(sig_or, sig_recons).item()#device
@@ -3049,7 +1405,7 @@ def plot_prediction(model, data, label, fig, axs, nchs, scale = None, channel = 
             if not isinstance(sig_sr, np.ndarray):
                 sig_sr = np.array(sig_sr)
             sig_sr = torch.from_numpy(sig_sr)
-        print(sig_or_hr.shape, sig_sr.shape)
+        #print(sig_or_hr.shape, sig_sr.shape)
         sr_loss = loss_fsr(sig_or_hr, sig_sr).item()
         print("Super resolution error: {}".format(sr_loss))
     
@@ -3095,7 +1451,7 @@ def plot_prediction(model, data, label, fig, axs, nchs, scale = None, channel = 
             axs[j].set_ylim([y_min, y_max])
     else:
         
-        print(sig_or.shape, sig_recons.shape)
+        #print(sig_or.shape, sig_recons.shape)
         y_min = min([min(sig_or[:]), min(sig_recons[:])])
         y_max = max([max(sig_or[:]), max(sig_recons[:])])
         
@@ -3195,7 +1551,7 @@ def plot_super_resolution(model, to_predict, to_predict_hr, ch, fig, axs, nchs, 
         pred = model(data)
     model.train()
 
-    print(len(pred))
+    #print(len(pred))
         
     n1 = to_predict.shape[-1]
     t1 = np.arange(0, n1, 1)
@@ -3236,7 +1592,7 @@ def plot_super_resolution(model, to_predict, to_predict_hr, ch, fig, axs, nchs, 
         sig_or = sig_or[0, :, :]
         sig_recons = sig_recons[0, :, :]
         
-        print(sig_or.shape, sig_recons.shape, sig_ecg_hr.shape, sig_sr.shape, sig_ecg_sr.shape)
+        #print(sig_or.shape, sig_recons.shape, sig_ecg_hr.shape, sig_sr.shape, sig_ecg_sr.shape)
         if sig_sr is not None:
             sig_sr = sig_sr[0, :, :]
             sig_ecg_hr = sig_ecg_hr[0, :, :]
@@ -3412,7 +1768,7 @@ class MMVAESR_Experiment(pl.LightningModule):
 
         
         if self.nchs > 1:
-            print(">1", self.nchs)
+            #print(">1", self.nchs)
             self.fig, self.ax = plt.subplots(self.nchs, figsize=(10, 8))
             if self.hr:
                 self.fig2, self.ax2 = plt.subplots(self.nchs, figsize=(10, 8))
@@ -3420,7 +1776,7 @@ class MMVAESR_Experiment(pl.LightningModule):
                 self.fig2 = None
                 self.ax2 = None
         else:
-            print("ELSE", self.nchs)
+            #print("ELSE", self.nchs)
             self.fig, self.ax = plt.subplots(1, figsize=(10, 8))
             if self.hr:
                 self.fig2, self.ax2 = plt.subplots(1, figsize=(10, 8))
@@ -3835,452 +2191,6 @@ def plot_wavelets_rt(model, to_predict, to_predict_hr, scale, scale_hr, fig_wv, 
     #plt.legend()
     #print("Mean Squared Error: %.3g" % np.mean(np.abs(datas[1] - datas[0])**2))
 
-class MMVAESR_Experiment2d(pl.LightningModule):
-
-    def __init__(self,
-                 vae_model,
-                 params, 
-                 mode,
-                 to_predict,
-                 label,
-                 nchs,
-                 batch_size,
-                 to_predict_signal,
-                 channel = None,
-                 to_predict_hr = None,
-                 log_epochs = 10,
-                 epochs_save_preliminar = 100,
-                 loss_name = "mse",
-                 lr_change = None,
-                 lr_scheduler = False,
-                 in_colab = False,
-                 sr_type = "upsample", 
-                 loss_type = "lr", 
-                 scales = None, 
-                 scales_hr = None,
-                 to_predict_hr_signal = None
-                 ):
-        
-        super().__init__()
-
-        self.params = params
-        self.curr_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.model = vae_model.to(self.curr_device)
-        self.mode = mode
-        self.hold_graph = False
-        self.log_epochs = log_epochs
-        self.epochs_save_preliminar = epochs_save_preliminar
-        self.to_predict = to_predict
-        self.to_predict_hr = to_predict_hr
-        self.label = label
-        self.nchs = nchs
-        self.channel = channel
-        self.batch_size = batch_size 
-        self.loss_name = loss_name
-        self.fig_sr, self.axs_sr = plt.subplots(3, figsize=(10, 8))
-        self.in_colab = in_colab
-        self.lr_scheduler = lr_scheduler
-        self.automatic_optimization = False
-        self.scales = scales
-        self.scales_hr = scales_hr 
-        
-        self.to_predict_signal = to_predict_signal
-        self.to_predict_hr_signal = to_predict_hr_signal
-        
-        self.supported_loss_types = ["lr", "lr+hr", "hr"]
-        if loss_type not in self.supported_loss_types:
-            loss_type = "lr"
-        self.loss_type = loss_type 
-        
-        self.supported_sr_types = ["upsample", "convt", "none", None]
-        if sr_type == "none":
-            sr_type = None
-        elif sr_type not in self.supported_sr_types:
-            sr_type = None
-        self.sr_type = sr_type
-
-        if "w" in self.mode: 
-            if self.to_predict_hr is None:
-                raise Exception("to_predict_hr must be not None when ECG AE reconstruction and super resolution modality is wavelets based.")
-            else:
-                self.fig_wv, self.axs_wv = plt.subplots(self.nchs, 3, figsize=(10, 8))
-                self.fig_wvsr, self.axs_wvsr = plt.subplots(1, 4, figsize=(10, 8))
-                self.fig_ecgw, self.axs_ecgw = plt.subplots(self.nchs, 1, figsize=(10, 8))
-                self.fig_recwav, self.axs_recwav = plt.subplots(1, 1, figsize=(10, 8))
-                self.fig_recwav.suptitle("Signal reconstruction from reconstructed wavelet")
-                self.fig_srwav, self.axs_srwav =  plt.subplots(1, 1, figsize=(10, 8))
-                self.fig_srwav.suptitle("Signal Super-Resolution from super-resoluted wavelet")
-        if self.nchs > 1:
-            print(">1", self.nchs)
-            self.fig, self.axs = plt.subplots(self.nchs, figsize=(10, 8))
-        else:
-            print("ELSE", self.nchs)
-            self.fig, self.axs = plt.subplots(1, figsize=(10, 8))
-        
-        try:
-            self.hold_graph = self.params['retain_first_backpass']
-        except:
-            pass
-    
-    def forward(self, x, **kwargs):
-        
-        #if self.mode == "sw":
-            #x = x[:2] #NO SCALES
-        return self.model(x, **kwargs)
-    
-    """
-    def training_step(self, batch, batch_idx, optimizer_idx = 0):
-        
-        #print(batch.shape)
-        results = self.forward(batch)
-        train_loss = self.model.loss_function(*results,
-                                                  kld_weight = self.params['kld_weight'], 
-                                                  optimizer_idx=optimizer_idx,
-                                                  batch_idx = batch_idx,
-                                                 )
-
-        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True)
-        return train_loss['loss']
-    """
-    def training_step(self, batch, batch_idx):
-                                         
-        # Access the optimizer and scheduler
-        if self.sr_type is not None:
-            optimizer_rec, optimizer_sr = self.optimizers()
-        else:
-            optimizer_rec = self.optimizers()
-
-        
-        if self.lr_scheduler:
-            if self.sr_type is not None:
-                scheduler_rec, scheduler_sr = self.lr_schedulers()
-            else:
-                scheduler_rec = self.lr_schedulers()
-        else:
-            scheduler_rec = None
-            scheduler_sr = None
-
-        # Compute loss
-        
-        results = self.forward(batch)
-        loss = self.model.loss_function(*results, kld_weight = self.params['kld_weight'])
-        self.log_dict({key: val.item() for key, val in loss.items()}, sync_dist=True)
-
-        # Perform reconstruction manual optimization
-        if "lr" in self.loss_type:
-            optimizer_rec.zero_grad()
-            loss_rec = loss["Reconstruction Loss Wavelets"]
-            loss_rec.backward(retain_graph=True)
-            optimizer_rec.step()
-        
-        if self.sr_type is not None:
-            # Perform super resolution manual optimization
-            if "hr" in self.loss_type:
-                optimizer_sr.zero_grad()
-                loss_sr = loss["Super Resolution Error Wavelets"]
-                loss_sr.backward(retain_graph=True) #no?
-                optimizer_sr.step()
-
-        # Optionally, update the learning rate using the scheduler
-        if scheduler_rec is not None:
-            scheduler_rec.step()
-        if scheduler_sr is not None:
-            scheduler_sr.step()
-        
-        return loss["loss"]
-    
-    def on_train_epoch_end(self):
-        
-        #print(self.curr_epoch)
-        loss = self.logger.log_end_epoch()
-        if not self.in_colab:
-            if self.current_epoch % self.log_epochs == 0 or self.current_epoch % self.epochs_save_preliminar == 0:
-                clear_output()
-                plot_prediction(self.model, self.to_predict, self.label, self.fig, self.axs, self.nchs, self.scales, channel = self.channel, mode = self.mode, current_epoch=self.current_epoch, batch_size = self.batch_size)
-                if self.channel is not None:
-                    ch = self.channel
-                else:
-                    ch = 0
-                if self.sr_type is not None:
-                    plot_super_resolution(self.model, self.to_predict, self.to_predict_hr, ch, self.fig_sr, self.axs_sr, self.nchs, loss, self.current_epoch, self.scales, self.scales_hr, mode = self.mode, batch_size=self.batch_size)
-                if "w" in self.mode:
-                    plot_wavelet_reconstruction(self.to_predict_signal, self.to_predict, self.scales, self.fig_recwav, self.axs_recwav,  fs = 50)
-                    
-                    plot_wavelets_rt(self.model, self.to_predict, self.to_predict_hr, self.scales, self.scales_hr, self.fig_wv, self.axs_wv, self.fig_ecgw, self.axs_ecgw, nchs = self.nchs, batch_size=self.batch_size, epoch = self.current_epoch)        
-                    if self.sr_type is not None:
-                        plot_wavelet_reconstruction(self.to_predict_hr_signal, self.to_predict_hr, self.scales_hr, self.fig_srwav, self.axs_srwav,  fs = 500)
-                        plot_wavelets_sr_rt(self.model, self.to_predict, self.to_predict_hr, self.fig_wvsr, self.axs_wvsr, nchs = self.nchs, batch_size=self.batch_size, epoch = self.current_epoch)        
-                #fig_latentspace = plot_latent_space(self.model, self.train_data, self.train_labels)
-                #fig_pca_ls = plot_pca_latent_space(self.model, self.train_data, self.train_labels)
-                plt.show()
-
-            if self.current_epoch % self.epochs_save_preliminar == 0:
-                clear_output() 
-                plot_prediction(self.model, self.to_predict, self.label, self.fig, self.axs, self.nchs, self.scales, channel = self.channel, mode = self.mode, current_epoch=self.current_epoch, batch_size = self.batch_size)
-                if self.channel is not None:
-                    ch = self.channel
-                else:
-                    ch = 0
-                if self.sr_type is not None:
-                    plot_super_resolution(self.model, self.to_predict, self.to_predict_hr, ch, self.fig_sr, self.axs_sr, self.nchs, loss, self.current_epoch, self.scales, self.scales_hr, mode = self.mode, batch_size=self.batch_size)
-                #fig_latentspace = plot_latent_space(self.model, self.train_data, self.train_labels)
-                #fig_pca_ls = plot_pca_latent_space(self.model, self.train_data, self.train_labels)
-                self.fig.savefig('training_figures/reconstruction_{}epoch.png'.format(self.current_epoch), dpi=self.fig.dpi)
-                self.fig_sr.savefig('training_figures/super_resolution_channel0_{}epoch.png'.format(self.current_epoch), dpi=self.fig_sr.dpi)
-                #fig_latentspace.savefig('training_figures/latent_space_labels_{}epoch.png'.format(self.current_epoch), dpi=self.fig_latentspace.dpi)
-                #fig_pca_ls.savefig('training_figures/pca_latent_space_labels_{}epoch.png'.format(self.current_epoch), dpi=self.fig_pca_ls.dpi)
-                #plt.show()
-                if "w" in self.mode: 
-                    plot_wavelet_reconstruction(self.to_predict_signal, self.to_predict, self.scales, self.fig_recwav, self.axs_recwav,  fs = 50)
-                    plot_wavelets_rt(self.model, self.to_predict, self.to_predict_hr, self.scales, self.scales_hr, self.fig_wv, self.axs_wv, self.fig_ecgw, self.axs_ecgw, nchs = self.nchs, batch_size=self.batch_size, epoch = self.current_epoch)
-                    if self.sr_type is not None:
-                        plot_wavelet_reconstruction(self.to_predict_hr_signal, self.to_predict_hr, self.scales_hr, self.fig_srwav, self.axs_srwav,  fs = 500)
-                        plot_wavelets_sr_rt(self.model, self.to_predict, self.to_predict_hr, self.fig_wvsr, self.axs_wvsr, nchs = self.nchs, batch_size=self.batch_size, epoch = self.current_epoch)        
-      
-                    #dont save 
-        print("Epoch: {}, Loss: {}".format(self.current_epoch, loss), end=' \r')
-    
-    def configure_optimizers(self):
-       
-        optimizer_rec = torch.optim.Adam(self.model.parameters(),
-                               lr=self.params['LR']
-                               )
-        optims = [optimizer_rec]
-        if self.sr_type is not None:
-            optimizer_sr = torch.optim.Adam(self.model.parameters(),
-                                   lr=self.params['LR_sr']
-                                   )
-            optims.append(optimizer_sr)
-        if self.lr_scheduler:
-            scheduler_rec = LinearLR(optimizer_rec, start_factor=1.0, end_factor=0.1, total_iters=30, verbose = True)
-            schedulers = [scheduler_rec]
-            if self.sr_type is not None:
-                scheduler_sr = LinearLR(optimizer_sr, start_factor=1.0, end_factor=0.1, total_iters=30, verbose = True)
-                schedulers.append(scheduler_sr)
-            return optims, schedulers
-        else:
-            return optims 
-
-class MMVAESR_Experiment3d(pl.LightningModule):
-
-    def __init__(self,
-                 vae_model,
-                 params, 
-                 mode,
-                 to_predict,
-                 label,
-                 nchs,
-                 batch_size,
-                 channel = None,
-                 to_predict_hr = None,
-                 log_epochs = 10,
-                 epochs_save_preliminar = 100,
-                 loss_name = "mse",
-                 lr_change = None,
-                 lr_scheduler = False,
-                 in_colab = False,
-                 sr_type = "upsample",
-                 loss_type = "lr" 
-                ):
-        
-        super().__init__()
-
-        self.params = params
-        self.curr_device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-        self.model = vae_model.to(self.curr_device)
-        self.mode = mode
-        self.hold_graph = False
-        self.log_epochs = log_epochs
-        self.epochs_save_preliminar = epochs_save_preliminar
-        self.to_predict = to_predict
-        self.to_predict_hr = to_predict_hr
-        self.label = label
-        self.nchs = nchs
-        self.batch_size = batch_size 
-        self.loss_name = loss_name
-        self.channel = channel 
-        self.lr_scheduler = lr_scheduler
-        self.in_colab = in_colab 
-        self.automatic_optimization = False
-        
-        self.supported_sr_types = ["upsample", "convt", "none"]
-        if sr_type == "none":
-            sr_type = None
-        elif sr_type not in self.supported_sr_types:
-            sr_type = None
-        self.sr_type = sr_type
-
-        self.supporter_loss_types = ["lr", "lr+hr"]
-        if loss_type not in self.supported_loss_types:
-            loss_type = "lr"
-        self.loss_type = loss_type 
-        
-        
-        self.fig_sr, self.axs_sr = plt.subplots(3, figsize=(10, 8))
-        
-        
-        if "w" in self.mode: 
-            if self.to_predict_hr is None:
-                raise Exception("to_predict_hr must be not None when ECG AE reconstruction and super resolution modality is wavelets based.")
-            else:
-                self.fig_wv, self.axs_wv = plt.subplots(self.nchs, 3, figsize=(10, 8))
-                self.fig_wvsr, self.axs_wvsr = plt.subplots(1, 4, figsize=(10, 8))
-                self.fig_ecgw, self.axs_ecgw = plt.subplots(self.nchs, 1, figsize=(10, 8))
-                
-        if self.nchs > 1:
-            print(">1", self.nchs)
-            self.fig, self.axs = plt.subplots(self.nchs, figsize=(10, 8))
-        else:
-            print("ELSE", self.nchs)
-            self.fig, self.axs = plt.subplots(1, figsize=(10, 8))
-        
-        try:
-            self.hold_graph = self.params['retain_first_backpass']
-        except:
-            pass
-    
-    def forward(self, x, **kwargs):
-        
-        return self.model(x, **kwargs)
-
-    """
-    def training_step(self, batch, batch_idx, optimizer_idx = 0):
-        
-        #print(batch.shape)
-        results = self.forward(batch)
-        train_loss = self.model.loss_function(*results,
-                                                  kld_weight = self.params['kld_weight'],
-                                                  optimizer_idx=optimizer_idx,
-                                                  batch_idx = batch_idx,
-                                                 )
-
-        self.log_dict({key: val.item() for key, val in train_loss.items()}, sync_dist=True)
-        return train_loss['loss']
-    """
-
-    def training_step(self, batch, batch_idx):
-        
-        # Access the optimizer and scheduler
-        if self.sr_type is not None:
-            optimizer_rec_s, optimizer_rec_w , optimizer_sr_w = self.optimizers()
-        else:
-            optimizer_rec_s, optimizer_rec_w = self.optimizers()
-
-        
-        if self.lr_scheduler:
-            if self.sr_type is not None:
-                scheduler_rec_s, scheduler_rec_w, scheduler_sr = self.lr_schedulers()
-            else:
-                scheduler_rec_s, scheduler_rec_w = self.lr_schedulers()
-        else:
-            scheduler_rec_s = None
-            scheduler_rec_w = None
-            scheduler_sr = None
-
-        # Compute loss
-        
-        results = self.forward(batch)
-        loss = self.model.loss_function(*results, kld_weight = self.params['kld_weight'])
-        self.log_dict({key: val.item() for key, val in loss.items()}, sync_dist=True)
-
-        # Perform reconstruction signal manual optimization
-        optimizer_rec_s.zero_grad()
-        loss_rec = loss["Reconstruction Loss Signal"]
-        loss_rec.backward()
-        optimizer_rec_s.step()
-
-        # Perform reconstruction signal manual optimization
-        optimizer_rec_w.zero_grad()
-        loss_rec = loss["Reconstruction Loss Wavelets"]
-        loss_rec.backward()
-        optimizer_rec_w.step()
-
-        if self.sr_type is not None:
-            # Perform super resolution manual optimization
-            if "hr" in self.loss_type:
-                optimizer_sr_w.zero_grad()
-                loss_sr = loss["Super Resolution Error Wavelets"]
-                loss_sr.backward()
-                optimizer_sr_w.step()
-
-        # Optionally, update the learning rate using the scheduler
-        if scheduler_rec_s is not None:
-            scheduler_rec_s.step()
-        if scheduler_rec_w is not None:
-            scheduler_rec_w.step()
-        if scheduler_sr is not None:
-            scheduler_sr.step()
-        
-        return loss["loss"]
-     
-        
-    def on_train_epoch_end(self):
-        
-        #print(self.curr_epoch)
-        loss = self.logger.log_end_epoch() 
-        if not self.in_colab:
-            if self.current_epoch % self.log_epochs == 0 or self.current_epoch % self.epochs_save_preliminar == 0:
-                clear_output()
-                plot_prediction(self.model, self.to_predict, self.label, self.fig, self.axs, self.nchs, None,channel = self.channel, mode = self.mode, current_epoch=self.current_epoch, batch_size = self.batch_size)
-                if self.channel is not None:
-                    ch = self.channel
-                else:
-                    ch = 0
-                if self.sr_type is not None:
-                    plot_super_resolution(self.model, self.to_predict, self.to_predict_hr, ch, self.fig_sr, self.axs_sr, self.nchs, loss, self.current_epoch, None, None, mode = self.mode, batch_size=self.batch_size)
-                if "w" in self.mode:
-                    plot_wavelets_rt(self.model, self.to_predict, self.to_predict_hr, None, None, self.fig_wv, self.axs_wv, self.fig_ecgw, self.axs_ecgw, nchs = self.nchs, batch_size=self.batch_size, epoch = self.current_epoch)        
-                    plot_wavelets_sr_rt(self.model, self.to_predict, self.to_predict_hr, self.fig_wvsr, self.axs_wvsr, nchs = self.nchs, batch_size=self.batch_size, epoch = self.current_epoch)        
-                #fig_latentspace = plot_latent_space(self.model, self.train_data, self.train_labels)
-                #fig_pca_ls = plot_pca_latent_space(self.model, self.train_data, self.train_labels)
-                plt.show()
-
-            if self.current_epoch % self.epochs_save_preliminar == 0:
-                clear_output() 
-                plot_prediction(self.model, self.to_predict, self.label, self.fig, self.axs, self.nchs, None, channel = self.channel, mode = self.mode, current_epoch=self.current_epoch)
-                if self.channel is not None:
-                    ch = self.channel
-                else:
-                    ch = 0
-                if self.sr_type is not None:
-                    plot_super_resolution(self.model, self.to_predict, self.to_predict_hr, ch, self.fig_sr, self.axs_sr, self.nchs, loss, self.current_epoch, None,  None, mode = self.mode, batch_size=self.batch_size)
-                #fig_latentspace = plot_latent_space(self.model, self.train_data, self.train_labels)
-                #fig_pca_ls = plot_pca_latent_space(self.model, self.train_data, self.train_labels)
-                self.fig.savefig('training_figures/reconstruction_{}epoch.png'.format(self.current_epoch), dpi=self.fig.dpi)
-                self.fig_sr.savefig('training_figures/super_resolution_channel0_{}epoch.png'.format(self.current_epoch), dpi=self.fig_sr.dpi)
-                #fig_latentspace.savefig('training_figures/latent_space_labels_{}epoch.png'.format(self.current_epoch), dpi=self.fig_latentspace.dpi)
-                #fig_pca_ls.savefig('training_figures/pca_latent_space_labels_{}epoch.png'.format(self.current_epoch), dpi=self.fig_pca_ls.dpi)
-                #plt.show()
-                if "w" in self.mode: 
-                    plot_wavelets_rt(self.model, self.to_predict, self.to_predict_hr, self.scales, self.scales_hr, self.fig_wv, self.axs_wv, self.fig_ecgw, self.axs_ecgw, nchs = self.nchs, batch_size=self.batch_size, epoch = self.current_epoch)
-                    #dont save 
-        print("Epoch: {}, Loss: {}".format(self.current_epoch, loss), end=' \r')
-    
-    def configure_optimizers(self):
-       
-        optimizer_rec_w = torch.optim.Adam(self.model.parameters(),
-                               lr=self.params['LR']
-                               )
-        optimizer_rec_s =  torch.optim.Adam(self.model.parameters(),
-                               lr=self.params['LR']
-                               )
-        optims = [optimizer_rec_s, optimizer_rec_w]
-        if self.sr_type is not None:
-            optimizer_sr_w = torch.optim.Adam(self.model.parameters(),
-                                   lr=self.params['LR']
-                                   )
-            optims.append(optimizer_sr_w)
-        if self.lr_scheduler:
-            scheduler_rec_s = LinearLR(optimizer_rec_s, start_factor=1.0, end_factor=0.5, total_iters=30)
-            scheduler_rec_w = LinearLR(optimizer_rec_w, start_factor=1.0, end_factor=0.5, total_iters=30)
-            schedulers = [scheduler_rec_s, scheduler_rec_w]
-            if self.sr_type is not None:
-                scheduler_sr_w = LinearLR(optimizer_sr_w, start_factor=1.0, end_factor=0.5, total_iters=30)
-                schedulers.append(scheduler_sr_w)
-            return optims, schedulers
-        else:
-            return optims 
-
 def torch_removebyindex(torch_array, idx):
     torch_array = torch.cat([torch_array[:idx], torch_array[idx+1:]])
     return torch_array
@@ -4450,11 +2360,11 @@ def train_1d_model(train_dataloader, width, to_predict, img, label, batch_size, 
     
     if latent_dim  is None:
         latent_dim = int((width - div + num_layers*2) * outchannels[-1][-1])
-    print(outchannels[-1][-1])
+    #print(outchannels[-1][-1])
 
     size = width * 10
     #print(len(kernel_sizes), len(out_channels))
-    print("Latent dim: ", latent_dim)
+    #print("Latent dim: ", latent_dim)
     
     model = VAE1d_SR_multimodal(to_predict, img, batch_size = batch_size, num_layers=num_layers, type = model_type, in_channels=nchs, out_filters = outchannels, last_tanh = last_tanh, strides = strides, do = do, size = size, latent_dim = latent_dim, width = width, device = device, kernel_sizes=kernel_sizes, mode=mode, activation_name = activation_name, loss_name = loss_name, sr_type = sr_type, kernel_sizes_sr = kernel_sizes_sr, str_sr = str_sr, of_sr = of_sr, loss_type = loss_type, denoising = denoising)
     model_params = {"LR": lr, "kld_weight": kld_weight}#<1 to prioritize reconstruction
@@ -4477,9 +2387,9 @@ def train_1d_model(train_dataloader, width, to_predict, img, label, batch_size, 
     model = model.to(device)
     
     if channel is None:
-        torch.save(model, "models/model_{}.pt".format(label))
+        torch.save(model.state_dict(), "models/model_{}.pt".format(label))
     else:
-        torch.save(model, "models/model_{}_channel{}.pt".format(label, channel))
+        torch.save(model.state_dict(), "models/model_{}_channel{}.pt".format(label, channel))
         
     return model, trainer1d, model_run
 
@@ -4967,7 +2877,7 @@ def plot_wavelets(wavelets, datas, nchs = 12, fs_lr = 50, fs_hr = 500, fs_sr = 5
                 if nchs != 1:
                     plt.plot(datas[j][ch, :], colors[j], label = labels[j], linewidth = widths[j])
                 else:
-                    print(datas[j].shape)
+                    #print(datas[j].shape)
                     plt.plot(datas[j], colors[j], label = labels[j], linewidth = widths[j])
             plt.legend()
             print("Mean Squared Error: %.3g" % np.mean(np.abs(datas[1] - datas[0])**2))
@@ -5078,3 +2988,119 @@ def get_loss_function(name):
     lossf.requires_grad_ = True
     return lossf
 
+
+def load_models(device="cpu"):
+    
+    models_path = "models"
+    modelspath_list = [file for file in os.listdir(models_path) if file.split(".")[-1] == "pt"]
+    models = {}
+    cant_load = []
+    for modelpath in modelspath_list:
+        #model_2_denoising_lrhr_v2.pt
+        modelpath = models_path + os.sep + modelpath
+        modelname = modelpath.split(".")[0] #model_2_denoising_lrhr_v2
+        modelname = modelname.split("_")[2:]
+        temp = ""
+        for i, elem in enumerate(modelname):
+            temp += elem
+            if i < len(modelname)-1:
+                temp += "_"
+        modelname = temp
+        try:
+            model = load_model(modelpath, device)
+            del model.img
+            del model.encoder.img
+            del model.encoder.fig
+            del model.encoder.ax
+
+            models[modelname] = model
+        except Exception as e:
+            #print(e)
+            try:
+                model = torch.load(modelpath)
+                blocks = model.upsample.decoder
+                for i, block in enumerate(blocks):
+                  if i+1 == len(blocks):
+                    block.last_tanh = False
+                  else:
+                    block.last_tanh = True
+                blocks = model.decoder.decoder
+                for i, block in enumerate(blocks):
+                  if i+1 == len(blocks):
+                    block.last_tanh = False
+                  else:
+                    block.last_tanh = True
+                models[modelname] = model
+            except Exception as e1:
+                print(e1)
+                print("Can't load model: {}".format(modelpath))
+                cant_load.append(modelpath)
+    return models, cant_load
+
+
+def load_model(modelpath, device="cpu"):
+    
+    batch_size = 1
+    lr = 0.0001#0.00001#0.0001
+    epochs = 20
+    do = 0.1 #0.1 #need to prevent overfitting, if noisy reconstruction: decrese do
+    activation_name = "tanh" #tanh, relu, learkyrelu etc...
+    loss_name = "mse"
+    epochs_save_preliminar = 10
+    model_type = "ae"# or vae doesn't reconstructs  well
+    nchs = 12
+    channel = None
+    quicktest = False
+    
+    if "nosr" in modelpath:
+        sr_type = None
+    else:
+        sr_type = "convt" # convt for super resolution, None for DCAE without super resolution FIX THIS ERROR
+    
+    mode = "s"
+    
+    if "lrhr" in modelpath:
+        loss_type = "lr+hr"
+    elif "lr" in modelpath:
+        loss_type = "lr"
+    else:
+        loss_type = "hr"
+
+    if "nodenoising" in modelpath:
+        denoising = False 
+    else:
+        denoising = True 
+        
+    if "v2" in modelpath:
+        last_tanh = False
+    else:
+        last_tanh = True
+    
+    kernel_sizes = [[3, 3], [3, 3]]
+    out_channels = [[nchs, nchs*16], [nchs*32, nchs*64]] #[[nchs, nchs*16], [nchs*64, nchs]]
+    strides = [[1, 1] for i in range(len(kernel_sizes))]# STRIDE 1
+    kernel_sizes_sr = [[30, 30], [10, 4]]
+    str_sr = [[5, 2], [1, 1]] 
+    of_sr = reverse_listoflist(out_channels)
+    width = 250 #5000
+    img = None
+    to_predict = None 
+    lr_scheduler = False
+    lr_change  = {10: 0.00001}
+    
+    nchs = 12
+    args = {"batch_num": 1, "log_interval": 10}
+  
+    num_layers = len(kernel_sizes)
+    toprod =  [item for items in kernel_sizes for item in items]#item*2
+    div = np.sum([elem for elem in toprod if elem >= 1])
+    latent_dim = int((width - div + num_layers*2) * out_channels[-1][-1])
+
+    size = width * 10
+
+    model =  VAE1d_SR_multimodal(to_predict, img, batch_size = batch_size, num_layers=num_layers, type = model_type, in_channels=nchs, out_filters = out_channels, last_tanh = last_tanh, strides = strides, do = do, size = size, latent_dim = latent_dim, width = width, device = device, kernel_sizes=kernel_sizes, mode=mode, activation_name = activation_name, loss_name = loss_name, sr_type = sr_type, kernel_sizes_sr = kernel_sizes_sr, str_sr = str_sr, of_sr = of_sr, loss_type = loss_type, denoising = denoising)
+    
+    model.load_state_dict(torch.load(modelpath, weights_only=True))
+    model.eval()
+
+    return model
